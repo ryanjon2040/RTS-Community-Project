@@ -9,6 +9,13 @@ Jump right in and download this project.
 
 This project is aimed to be Blueprint exclusive but this may change in future.
 
+How may i help?
+-------------------
+
+Its simple. You can help in any way you want. By contributing new assets (characters, props, textures, materials etc) or by creating new gameplay mechanics or by creating new levels etc. You can also
+help by making this project available in multiple platforms such as Android, iOS, Linux, Mac etc. If you dont want to help, its ok. Just spread the word. :)
+
+
 How to get started
 -------------------
 
