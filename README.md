@@ -15,6 +15,13 @@ How may i help?
 Its simple. You can help in any way you want. By contributing new assets (characters, props, textures, materials etc) or by creating new gameplay mechanics or by creating new levels etc. You can also
 help by making this project available in multiple platforms such as Android, iOS, Linux, Mac etc. If you dont want to help, its ok. Just spread the word. :)
 
+What is available now?
+-------------------
+
+1: RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
+2: Selecting character and moving him around.
+3: Selecting a structure from HUD and placing it on world.
+4: Grid placement for structure.
 
 How to get started
 -------------------
