@@ -18,10 +18,10 @@ help by making this project available in multiple platforms such as Android, iOS
 What is available now?
 -------------------
 
-1: RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
-2: Selecting character and moving him around.
-3: Selecting a structure from HUD and placing it on world.
-4: Grid placement for structure.
+* RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
+* Selecting character and moving him around.
+* Selecting a structure from HUD and placing it on world.
+* Grid placement for structure.
 
 How to get started
 -------------------
