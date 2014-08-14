@@ -18,6 +18,9 @@ help by making this project available in multiple platforms such as Android, iOS
 What is available now?
 -------------------
 
+**Newly Added** <br>
+ Selection Box (Visual Only)
+
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
 * Selecting a structure from HUD and placing it on world.
