@@ -19,12 +19,13 @@ What is available now?
 -------------------
 
 **Newly Added** <br>
- Selection Box (Visual Only)
+New animated mesh that shows MoveTo Hit location.
 
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
 * Selecting a structure from HUD and placing it on world.
 * Grid placement for structure.
+* Selection Box (Visual Only).
 
 How to get started
 -------------------
