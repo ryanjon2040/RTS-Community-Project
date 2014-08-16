@@ -19,13 +19,15 @@ What is available now?
 -------------------
 
 **Newly Added** <br>
-New animated mesh that shows MoveTo Hit location.
+Dwarf character from Epic's Strategy Game Example <br>
+Multiple Units (Civilian and Fighter). NOTE: They are placeholders only.
 
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
 * Selecting a structure from HUD and placing it on world.
 * Grid placement for structure.
 * Selection Box (Visual Only).
+* New animated mesh that shows MoveTo Hit location.
 
 How to get started
 -------------------
