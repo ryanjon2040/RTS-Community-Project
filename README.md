@@ -17,17 +17,20 @@ help by making this project available in multiple platforms such as Android, iOS
 
 What is available now?
 -------------------
+<a href="http://www.youtube.com/watch?feature=player_embedded&v=3XX9X5sZCQw" target="_blank"><img src="http://img.youtube.com/vi/3XX9X5sZCQw/0.jpg" width="640" height="360" border="10" /></a>
 
 **Newly Added** <br>
-Dwarf character from Epic's Strategy Game Example <br>
-Multiple Units (Civilian and Fighter). NOTE: They are placeholders only.
+Selection box can now select multiple characters.<br>
+Ability to move multiple characters.
 
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
 * Selecting a structure from HUD and placing it on world.
 * Grid placement for structure.
-* Selection Box (Visual Only).
+* Selection Box
 * New animated mesh that shows MoveTo Hit location.
+* Dwarf character from Epic's Strategy Game Example.
+* Multiple Units (Civilian and Fighter). NOTE: They are placeholders only.
 
 How to get started
 -------------------
