@@ -227,3 +227,5 @@ Content/.svn/format
 Content/.svn/pristine/0a/0ac403baaa7612d064c1962a53c539a4e506bcc3.svn-base
 *.svn-base
 Content/.svn/wc.db
+Content/Maps/Test_Map.umap
+RTSTemplate.uproject
