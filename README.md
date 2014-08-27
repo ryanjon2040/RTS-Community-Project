@@ -20,7 +20,8 @@ What is available now?
 <a href="http://www.youtube.com/watch?feature=player_embedded&v=3XX9X5sZCQw" target="_blank"><img src="http://img.youtube.com/vi/3XX9X5sZCQw/0.jpg" width="640" height="360" border="10" /></a>
 
 **Newly Added** <br>
-Resources (Not yet collectible)
+Resources (Collectible Wood and Gold)
+Resource spawner Blueprint Blutitlity
 
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
