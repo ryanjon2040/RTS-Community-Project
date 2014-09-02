@@ -17,10 +17,10 @@ help by making this project available in multiple platforms such as Android, iOS
 
 What is available now?
 -------------------
-<a href="http://www.youtube.com/watch?feature=player_embedded&v=3XX9X5sZCQw" target="_blank"><img src="http://img.youtube.com/vi/3XX9X5sZCQw/0.jpg" width="640" height="360" border="10" /></a>
+<a href="https://www.youtube.com/watch?v=RpyZx45dzqE" target="_blank"><img src="http://img.youtube.com/vi/RpyZx45dzqE/0.jpg" width="640" height="360" border="10" /></a>
 
 **Newly Added** <br>
-Basic AI
+Collectible Food
 
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
@@ -31,6 +31,9 @@ Basic AI
 * Multiple Units (Civilian and Fighter). NOTE: They are placeholders only.
 * Selection box can now select multiple characters.
 * Ability to move multiple characters.
+* Basic AI
+* Resources (Collectible Wood, Gold and Food)
+* Resource spawner Blueprint Blutitlity
 
 How to get started
 -------------------
