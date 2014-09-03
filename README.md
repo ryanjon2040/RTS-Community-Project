@@ -20,7 +20,7 @@ What is available now?
 <a href="https://www.youtube.com/watch?v=RpyZx45dzqE" target="_blank"><img src="http://img.youtube.com/vi/RpyZx45dzqE/0.jpg" width="640" height="360" border="10" /></a>
 
 **Newly Added** <br>
-Collectible Food
+Tooltip
 
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
@@ -34,6 +34,7 @@ Collectible Food
 * Basic AI
 * Resources (Collectible Wood, Gold and Food)
 * Resource spawner Blueprint Blutitlity
+* Collectible Food
 
 How to get started
 -------------------
