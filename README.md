@@ -1,6 +1,27 @@
 Welcome to RTS Community Project
 =====================
 
+UPDATE:
+------------
+
+Vote for RTS Game style, type and more:
+
+***Era vote***<br>
+http://www.easypolls.net/poll.html?p=54183340e4b09149347df9e1
+
+***Style vote***<br>
+http://www.easypolls.net/poll.html?p=54183442e4b09149347df9e7
+
+***Realism vote***<br>
+http://www.easypolls.net/poll.html?p=54183418e4b09149347df9e4
+
+***Theme vote***<br>
+http://www.easypolls.net/poll.html?p=541833e4e4b09149347df9e2
+
+
+Overview
+------------
+
 Hi there!
 
 This is the project page for a **Real Time Strategy Game** developed by the awesome [Unreal Engine 4 community] (https://forums.unrealengine.com/). 
