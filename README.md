@@ -1,6 +1,27 @@
 Welcome to RTS Community Project
 =====================
 
+UPDATE:
+------------
+
+Vote for RTS Game style, type and more:
+
+***Era vote***<br>
+http://www.easypolls.net/poll.html?p=54183340e4b09149347df9e1
+
+***Style vote***<br>
+http://www.easypolls.net/poll.html?p=54183442e4b09149347df9e7
+
+***Realism vote***<br>
+http://www.easypolls.net/poll.html?p=54183418e4b09149347df9e4
+
+***Theme vote***<br>
+http://www.easypolls.net/poll.html?p=541833e4e4b09149347df9e2
+
+
+Overview
+------------
+
 Hi there!
 
 This is the project page for a **Real Time Strategy Game** developed by the awesome [Unreal Engine 4 community] (https://forums.unrealengine.com/). 
@@ -20,7 +41,7 @@ What is available now?
 <a href="https://www.youtube.com/watch?v=RpyZx45dzqE" target="_blank"><img src="http://img.youtube.com/vi/RpyZx45dzqE/0.jpg" width="640" height="360" border="10" /></a>
 
 **Newly Added** <br>
-Collectible Food
+Tooltip
 
 * RTS Camera functions such as zooming and moving around with WASD and rotation with Right Click.
 * Selecting character and moving him around.
@@ -34,6 +55,7 @@ Collectible Food
 * Basic AI
 * Resources (Collectible Wood, Gold and Food)
 * Resource spawner Blueprint Blutitlity
+* Collectible Food
 
 How to get started
 -------------------
