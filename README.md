@@ -1,9 +1,6 @@
 Welcome to RTS Community Project
 =====================
 
-UPDATE:
-------------
-
 Vote for RTS Game style, type and more:
 
 ***Era vote***<br>
@@ -25,7 +22,7 @@ Overview
 Hi there!
 
 This is the project page for a **Real Time Strategy Game** developed by the awesome [Unreal Engine 4 community] (https://forums.unrealengine.com/). 
-Started by Satheesh PV (aka ryanjon2040) on Aug-12-2014 this project is meant to be released on PC and possibly for Android and iOS. If you are a Unreal Engine 4 Subscriber then why wait?
+Started by Satheesh PV (aka ryanjon2040) on Aug-12-2014 this project is meant to be released on PC and possibly for Android and iOS. If you are an Unreal Engine 4 Subscriber, then why wait?
 Jump right in and download this project.
 
 This project is aimed to be Blueprint exclusive, but this may change in future.
@@ -54,7 +51,7 @@ Tooltip
 * Ability to move multiple characters.
 * Basic AI
 * Resources (Collectible Wood, Gold and Food)
-* Resource spawner Blueprint Blutitlity
+* Resource spawner Blueprint Script
 * Collectible Food
 
 How to get started
@@ -83,8 +80,9 @@ One way to contribute changes is to send a GitHub [Pull Request](https://help.gi
 
 - You'll want to create your own RTS Community Project **fork** by clicking the __Fork button__ in the top right of this page.
 - Next, [install a Git client](http://help.github.com/articles/set-up-git) on your computer.
-- Use the GitHub program to **Sync** the project's files to a folder on your machine.
+- Use the GitHub software to **Sync** the project's files to a folder on your machine.
 - You can now open up **RTSTemplate.uproject** in the editor!
 - Using the GitHub program, you can easily **submit contributions** back up to your **fork**. 
+- If you think that your work is ready to be added to our master branch, please create a PR.
 
 NOTE: This Readme file will be updated in future.
