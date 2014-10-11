@@ -82,7 +82,7 @@ One way to contribute changes is to send a GitHub [Pull Request](https://help.gi
 - Next, [install a Git client](http://help.github.com/articles/set-up-git) on your computer.
 - Use the GitHub software to **Sync** the project's files to a folder on your machine.
 - You can now open up **RTSTemplate.uproject** in the editor!
-- Using the GitHub program, you can easily **submit contributions** back up to your **fork**. 
+- Using the GitHub software, you can easily **submit contributions** back up to your **fork**. 
 - If you think that your work is ready to be added to our master branch, please create a PR.
 
 NOTE: This Readme file will be updated in future.
