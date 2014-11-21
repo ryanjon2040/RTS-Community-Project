@@ -1,7 +1,7 @@
 Welcome to RTS Community Project
 =====================
 
-UPDATE (Polls Closed. Follow the links to see the result):
+Polls Closed. Follow the links to see the result:
 ------------
 
 Vote for RTS Game style, type and more:
