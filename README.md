@@ -1,8 +1,15 @@
 Welcome to RTS Community Project
 =====================
 
-UPDATE:
-------------
+UPDATE
+-------------
+
+Check out the new [model list for this RTS Project](https://onedrive.live.com/redir?page=view&resid=3AF4B2A1214D386F!298&authkey=!AO4S95D9I-zw2Pc). To all those who are modeling for this project, please add your model with your name and other model details to that document. To gain access to the document please send me your email address as a private message on Unreal Engine Forums. [Here is my profile](https://forums.unrealengine.com/member.php?904-ryanjon2040)
+
+I will then invite you to edit the document.
+
+Polls Closed. Follow the links to see the result:
+-----------
 
 Vote for RTS Game style, type and more:
 
