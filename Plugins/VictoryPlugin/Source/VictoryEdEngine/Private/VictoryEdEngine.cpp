@@ -65,8 +65,8 @@ TSharedRef<FEdMode> FMyEditorModeFactory::CreateMode() const
 
 
 
-UVictoryEdEngine::UVictoryEdEngine(const class FPostConstructInitializeProperties& PCIP)
-	: Super(PCIP)
+UVictoryEdEngine::UVictoryEdEngine(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 	CreatedVictoryEdMode = false;
 	

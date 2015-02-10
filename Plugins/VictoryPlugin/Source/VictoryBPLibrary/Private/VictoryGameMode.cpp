@@ -12,8 +12,8 @@ DEFINE_LOG_CATEGORY(VictoryGameModeLog)
 //////////////////////////////////////////////////////////////////////////
 // AVictoryGameMode
 
-AVictoryGameMode::AVictoryGameMode(const class FPostConstructInitializeProperties& PCIP)
-	: Super(PCIP)
+AVictoryGameMode::AVictoryGameMode(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 
 }

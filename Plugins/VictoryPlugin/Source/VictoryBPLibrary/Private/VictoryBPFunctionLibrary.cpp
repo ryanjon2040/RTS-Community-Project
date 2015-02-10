@@ -8,13 +8,13 @@
 //////////////////////////////////////////////////////////////////////////
 // UVictoryBPFunctionLibrary
 
-UVictoryBPFunctionLibrary::UVictoryBPFunctionLibrary(const class FPostConstructInitializeProperties& PCIP)
-	: Super(PCIP)
+UVictoryBPFunctionLibrary::UVictoryBPFunctionLibrary(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 	
 }
  
-FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyboardEvent& KeyEvent)
+FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyEvent& KeyEvent)
 {
 	FVictoryInput VInput;
 	 
@@ -28,6 +28,7 @@ FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyboardE
 	
 	return VInput;
 }
+
 
 void UVictoryBPFunctionLibrary::VictoryGetAllKeyBindings(TArray<FVictoryInput>& Bindings)
 {
@@ -110,7 +111,7 @@ void UVictoryBPFunctionLibrary::GetAllWidgetsOfClass(UObject* WorldContextObject
 		if(TopLevelOnly)
 		{
 			//only add top level widgets
-			if(Itr->GetIsVisible())			//IsInViewport in 4.6
+			if(Itr->IsInViewport())			
 			{
 				FoundWidgets.Add(*Itr);
 			}
@@ -140,14 +141,38 @@ void UVictoryBPFunctionLibrary::RemoveAllWidgetsOfClass(UObject* WorldContextObj
 		//~~~~~~~~~~~~~~~~~~~
 		 
 		//only add top level widgets
-		if(Itr->GetIsVisible())			//IsInViewport in 4.6
+		if(Itr->IsInViewport())			//IsInViewport in 4.6
 		{
 			Itr->RemoveFromViewport();
 		}
 	}
 }
 
-
+bool UVictoryBPFunctionLibrary::IsWidgetOfClassInViewport(UObject* WorldContextObject, TSubclassOf<UUserWidget> WidgetClass)
+{ 
+	if(!WidgetClass) return false;
+	if(!WorldContextObject) return false;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return false;
+	//~~~~~~~~~~~
+	  
+	for(TObjectIterator<UUserWidget> Itr; Itr; ++Itr)
+	{
+		if(Itr->GetWorld() != World) continue;
+		//~~~~~~~~~~~~~~~~~~~~~
+		
+		if( ! Itr->IsA(WidgetClass)) continue;
+		//~~~~~~~~~~~~~~~~~~~
+		    
+		if(Itr->GetIsVisible())			//IsInViewport in 4.6
+		{
+			return true;
+		}
+	}
+	
+	return false;
+}
  
 
 bool UVictoryBPFunctionLibrary::VictorySoundVolumeChange(USoundClass* SoundClassObject, float NewVolume)
@@ -2630,14 +2655,14 @@ class USoundWave* UVictoryBPFunctionLibrary::GetSoundWaveFromFile(const FString&
 	//* loaded song file (binary, encoded)
 	TArray < uint8 > rawFile;
 
-	loaded = FFileHelper::LoadFileToArray(rawFile, FilePath.GetCharArray().GetTypedData());
+	loaded = FFileHelper::LoadFileToArray(rawFile, FilePath.GetCharArray().GetData());
 
 	if (loaded)
 	{
 		FByteBulkData* bulkData = &sw->CompressedFormatData.GetFormat(TEXT("OGG"));
 
 		bulkData->Lock(LOCK_READ_WRITE);
-		FMemory::Memcpy(bulkData->Realloc(rawFile.Num()), rawFile.GetTypedData(), rawFile.Num());
+		FMemory::Memcpy(bulkData->Realloc(rawFile.Num()), rawFile.GetData(), rawFile.Num());
 		bulkData->Unlock();
 
 		loaded = fillSoundWaveInfo(sw, &rawFile) == 0 ? true : false;
@@ -2653,7 +2678,7 @@ int32 UVictoryBPFunctionLibrary::fillSoundWaveInfo(class USoundWave* sw, TArray<
 {
     FSoundQualityInfo info;
     FVorbisAudioInfo vorbis_obj = FVorbisAudioInfo();
-    if (!vorbis_obj.ReadCompressedInfo(rawFile->GetTypedData(), rawFile->Num(), &info))
+    if (!vorbis_obj.ReadCompressedInfo(rawFile->GetData(), rawFile->Num(), &info))
     {
         //Debug("Can't load header");
         return 1;

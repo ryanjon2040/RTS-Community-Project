@@ -118,7 +118,8 @@ class VICTORYBPLIBRARY_API UVictoryBPFunctionLibrary : public UBlueprintFunction
 	//~~~~ Key Re Binding ! ~~~~
 	  
 	UFUNCTION(BlueprintPure, Category = "VictoryBPLibrary|Key Rebinding")
-	static FVictoryInput VictoryGetVictoryInput(const FKeyboardEvent& KeyEvent);
+	static FVictoryInput VictoryGetVictoryInput(const FKeyEvent& KeyEvent);
+	
 	
 	static FORCEINLINE void UpdateActionMapping(FInputActionKeyMapping& Destination, const FVictoryInput& VictoryInputBind)
 	{
@@ -251,6 +252,8 @@ class VICTORYBPLIBRARY_API UVictoryBPFunctionLibrary : public UBlueprintFunction
 	UFUNCTION(BlueprintCallable, Category = "VictoryBPLibrary|UMG",meta=(HidePin="WorldContextObject", DefaultToSelf="WorldContextObject" ))
 	static void RemoveAllWidgetsOfClass(UObject* WorldContextObject, TSubclassOf<UUserWidget> WidgetClass);
 	
+	UFUNCTION(BlueprintCallable, Category = "VictoryBPLibrary|UMG",meta=(HidePin="WorldContextObject", DefaultToSelf="WorldContextObject" ))
+	static bool IsWidgetOfClassInViewport(UObject* WorldContextObject, TSubclassOf<UUserWidget> WidgetClass);
 	
 	
 	/** Retrieves the unique net ID for the local player as a number! The number itself will vary based on what Online Subsystem is being used, but you are guaranteed that this number is unique per player! */
