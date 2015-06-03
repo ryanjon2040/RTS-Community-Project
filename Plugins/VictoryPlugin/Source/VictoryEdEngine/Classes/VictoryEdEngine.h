@@ -1,6 +1,8 @@
 #pragma once
 
 #include "UnrealEd.h" 
+
+#include "JoyISM.h"
 #include "VictoryEdAlignMode.h"
 #include "VictoryEdEngine.generated.h"
 
@@ -78,6 +80,10 @@ class UVictoryEdEngine : public UUnrealEdEngine
 	//the user-selected mode prior to initiating VictoryEdMode
 	FEditorModeID PrevModeID;
 
+//Exec 
+public:
+	virtual bool Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar=*GLog ) override;
+	void VictoryConsole();
 	
 //utility
 
@@ -115,10 +121,17 @@ public:
 		return GetStatsFont();
 	}
 	
+	
+//User Choices
+public:
+	uint8 VertexDisplayChoice;
+	float CurrentVerticiesScale;
+	uint8 DrawVerticiesMode; //0 = dont show, 1= show 1, 2 = show all
+	
 //Selection
 public:
 	AActor* VSelectedActor;
-	
+	AJoyISM* SelectedJoyISM;
 	TArray<FVector> SelectionRelativeOffsets;
 	void GetSelectedActorsRelativeOffsets();
 	bool SelectedActorVerticiesNeedsUpdating;

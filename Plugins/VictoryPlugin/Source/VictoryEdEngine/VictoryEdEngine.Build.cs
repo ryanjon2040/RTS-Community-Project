@@ -13,7 +13,9 @@ public class VictoryEdEngine : ModuleRules
 				"Engine", 
 				"InputCore",
 				"UnrealEd",
-				"Slate"
+				"Slate",
+                "SlateCore",
+                "ImageWrapper"
 			}
 		);
 		//Private Paths

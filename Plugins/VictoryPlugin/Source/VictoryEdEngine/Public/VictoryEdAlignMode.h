@@ -6,6 +6,8 @@
 //FVertex Buffer
 #include "StaticMeshResources.h"
 
+#include "JoyISM.h"
+
 //Input
 #include "InputCoreTypes.h"
 
@@ -13,11 +15,19 @@ class UVictoryEdEngine;
 
 struct FVButton;
 struct FDropToClosestSurfaceData;
-
+  
 class FVictoryEdAlignMode : public FEdMode
 {
+	//Another Redo/Undo Method 
+	/*
+	FORCEINLINE void SaveUndoRedoSimple(UObject* Obj)
+	{
+		if(!Obj) return;
+		Obj->SetFlags( RF_Transactional );
+		Obj->Modify();
+	}
+	*/
 	
-
 	
 	
 //Statics
@@ -32,6 +42,12 @@ public:
 //Display Updates
 public:
 	bool DoSingleDisplayUpdate;
+	
+//Joy ISM
+public:
+	void PerformJoyISM();
+	void ReverseJoyISM();
+	
 //Drop to Surface
 public:
 	
@@ -43,12 +59,12 @@ public:
 	FORCEINLINE void GetBottomSurfacePoint(AStaticMeshActor* TheSMA, FVector& BottomMostPoint)
 	{
 		if(!TheSMA) return;
-		if(!TheSMA->StaticMeshComponent) BottomMostPoint = FVector::ZeroVector;
+		if(!TheSMA->GetStaticMeshComponent()) BottomMostPoint = FVector::ZeroVector;
 		//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		FVector Origin;
 		FVector Extent;
 		TheSMA->GetActorBounds(true,Origin,Extent);
-		TheSMA->StaticMeshComponent->GetDistanceToCollision(Origin - FVector(0,0,Extent.Z + 100),BottomMostPoint);
+		TheSMA->GetStaticMeshComponent()->GetDistanceToCollision(Origin - FVector(0,0,Extent.Z + 100),BottomMostPoint);
 	}
 //Vertex:
 public:
@@ -57,9 +73,6 @@ public:
 	
 	//Snap Key Pressed!
 	bool SnapKeyPressed;
-	
-	//VertexDisplayChoice
-	uint8 VertexDisplayChoice;
 		
 	//Snap!
 	void DoVertexSnap(const FVector& Dest);
@@ -82,13 +95,8 @@ public:
 	//~~~~~~~~~
 	
 	//Vertex Scale
-	float CurrentVerticiesScale;
 	bool PlusIsDown;
 	bool MinusIsDown;
-	
-	//V Key Down?
-	uint8 DrawVerticiesMode; //0 = dont show, 1= show 1, 2 = show all
-	
 	
 	//Index of Vertex, so actor can move and maintain selection
 	int32 SelectedVertexForSelectedActor;
@@ -190,13 +198,7 @@ public:
 	bool FadeInVictoryTitle;
 	float VictoryTitleAlpha;
 	
-	FORCEINLINE void VictoryTitleAppears()
-	{
-		VictoryTitleAppearTime = FDateTime::Now();
-		VictoryTitleAlpha = 1;
-		VictoryTitleVisible = true;
-		FadeInVictoryTitle = false;
-	}
+	void VictoryTitleAppears();
 	
 //Tick
 public:
@@ -243,3 +245,4 @@ public:
 	 */
 	virtual bool ShouldDrawWidget() const;
 };
+

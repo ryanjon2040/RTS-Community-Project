@@ -5,16 +5,291 @@
 
 #include "StaticMeshResources.h"
 
+#include "Developer/ImageWrapper/Public/Interfaces/IImageWrapper.h"
+#include "Developer/ImageWrapper/Public/Interfaces/IImageWrapperModule.h"
+
+//~~~ PhysX ~~~
+#include "PhysXIncludes.h"
+#include "PhysicsPublic.h"		//For the ptou conversions
+//~~~~~~~~~~~
+ 
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//									Saxon Rah Random Nodes
+// Chrono and Random
+
+//Order Matters, 
+//		has to be after PhysX includes to avoid isfinite name definition issues
+#include <chrono>
+#include <random>
+
+template <class FunctorType>
+class PlatformFileFunctor : public IPlatformFile::FDirectoryVisitor	//GenericPlatformFile.h
+{
+public:
+	
+	virtual bool Visit(const TCHAR* FilenameOrDirectory, bool bIsDirectory) override
+	{
+		return Functor(FilenameOrDirectory, bIsDirectory);
+	}
+
+	PlatformFileFunctor(FunctorType&& FunctorInstance)
+		: Functor(MoveTemp(FunctorInstance))
+	{
+	}
+
+private:
+	FunctorType Functor;
+};
+
+template <class Functor>
+PlatformFileFunctor<Functor> MakeDirectoryVisitor(Functor&& FunctorInstance)
+{
+	return PlatformFileFunctor<Functor>(MoveTemp(FunctorInstance));
+}
+
+//Written by Rama, please credit me if you use this code elsewhere
+static FORCEINLINE bool GetFiles(const FString& FullPathOfBaseDir, TArray<FString>& FilenamesOut, bool Recursive=false, const FString& FilterByExtension = "")
+{
+	//Format File Extension, remove the "." if present
+	const FString FileExt = FilterByExtension.Replace(TEXT("."),TEXT("")).ToLower();
+	
+	FString Str;
+	auto FilenamesVisitor = MakeDirectoryVisitor(
+		[&](const TCHAR* FilenameOrDirectory, bool bIsDirectory) 
+		{
+			//Files
+			if ( ! bIsDirectory)
+			{
+				//Filter by Extension
+				if(FileExt != "")
+				{
+					Str = FPaths::GetCleanFilename(FilenameOrDirectory);
+				
+					//Filter by Extension
+					if(FPaths::GetExtension(Str).ToLower() == FileExt) 
+					{
+						if(Recursive) 
+						{
+							FilenamesOut.Push(FilenameOrDirectory); //need whole path for recursive
+						}
+						else 
+						{
+							FilenamesOut.Push(Str);
+						}
+					}
+				}
+				
+				//Include All Filenames!
+				else
+				{
+					//Just the Directory
+					Str = FPaths::GetCleanFilename(FilenameOrDirectory);
+					
+					if(Recursive) 
+					{
+						FilenamesOut.Push(FilenameOrDirectory); //need whole path for recursive
+					}
+					else 
+					{
+						FilenamesOut.Push(Str);
+					}
+				}
+			}
+			return true;
+		}
+	);
+	if(Recursive) 
+	{
+		return FPlatformFileManager::Get().GetPlatformFile().IterateDirectoryRecursively(*FullPathOfBaseDir, FilenamesVisitor);
+	}
+	else 
+	{
+		return FPlatformFileManager::Get().GetPlatformFile().IterateDirectory(*FullPathOfBaseDir, FilenamesVisitor);
+	}
+}	
+
 //////////////////////////////////////////////////////////////////////////
 // UVictoryBPFunctionLibrary
 
-UVictoryBPFunctionLibrary::UVictoryBPFunctionLibrary(const class FPostConstructInitializeProperties& PCIP)
-	: Super(PCIP)
+UVictoryBPFunctionLibrary::UVictoryBPFunctionLibrary(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
 	
 }
  
-FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyboardEvent& KeyEvent)
+void UVictoryBPFunctionLibrary::VictoryISM_GetAllVictoryISMActors(UObject* WorldContextObject, TArray<AVictoryISM*>& Out)
+{
+	if(!WorldContextObject) return;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return;
+	//~~~~~~~~~~~
+	
+	Out.Empty();
+	for(TActorIterator<AVictoryISM> Itr(World); Itr; ++Itr)
+	{
+		Out.Add(*Itr);
+	}
+}
+	
+void UVictoryBPFunctionLibrary::VictoryISM_ConvertToVictoryISMActors(
+	UObject* WorldContextObject, 
+	TSubclassOf<AActor> ActorClass, 
+	TArray<AVictoryISM*>& CreatedISMActors, 
+	bool DestroyOriginalActors,
+	int32 MinCountToCreateISM
+){
+	//User Input Safety
+	if(MinCountToCreateISM < 1) MinCountToCreateISM = 1; //require for array access safety
+	
+	CreatedISMActors.Empty();
+	
+	if(!WorldContextObject) return;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return;
+	//~~~~~~~~~~~
+	
+	//I want one array of actors for each unique static mesh asset!  -Rama
+	TMap< UStaticMesh*,TArray<AActor*> > VictoryISMMap;
+	
+	//Note the ActorClass filter on the Actor Iterator! -Rama
+	for (TActorIterator<AActor> Itr(World, ActorClass); Itr; ++Itr)
+	{
+		//Get Static Mesh Component!
+		UStaticMeshComponent* Comp = Itr->FindComponentByClass<UStaticMeshComponent>();
+		if(!Comp) continue; 
+		if(!Comp->IsValidLowLevel()) continue;
+		//~~~~~~~~~
+		
+		//Add Key if not present!
+		if(!VictoryISMMap.Contains(Comp->StaticMesh))
+		{
+			VictoryISMMap.Add(Comp->StaticMesh);
+			VictoryISMMap[Comp->StaticMesh].Empty(); //ensure array is properly initialized
+		}
+		
+		//Add the actor!
+		VictoryISMMap[Comp->StaticMesh].Add(*Itr);
+	}
+	  
+	//For each Static Mesh Asset in the Victory ISM Map
+	for (TMap< UStaticMesh*,TArray<AActor*> >::TIterator It(VictoryISMMap); It; ++It)
+	{
+		//Get the Actor Array for this particular Static Mesh Asset!
+		TArray<AActor*>& ActorArray = It.Value();
+		
+		//No entries?
+		if(ActorArray.Num() < MinCountToCreateISM) continue;
+		//~~~~~~~~~~~~~~~~~~
+		  
+		//Get the Root
+		UStaticMeshComponent* RootSMC = ActorArray[0]->FindComponentByClass<UStaticMeshComponent>();
+		if(!RootSMC) continue;
+		//~~~~~~~~~~
+		
+		//Gather transforms!
+		TArray<FTransform> WorldTransforms;
+		for(AActor* Each : ActorArray)
+		{
+			WorldTransforms.Add(Each->GetTransform());
+			 
+			//Destroy original?
+			if(DestroyOriginalActors)
+			{
+				Each->Destroy();
+			}
+		}
+		  
+		//Create Victory ISM
+		FActorSpawnParameters SpawnInfo;
+		SpawnInfo.bNoCollisionFail 		= true; //always create!
+		SpawnInfo.bDeferConstruction 	= false;
+		 
+		AVictoryISM* NewISM = World->SpawnActor<AVictoryISM>(
+			AVictoryISM::StaticClass(), 
+			RootSMC->GetComponentLocation() ,
+			RootSMC->GetComponentRotation(), 
+			SpawnInfo 
+		);
+		
+		if(!NewISM) continue;
+		//~~~~~~~~~~
+		
+		//Mesh
+		NewISM->Mesh->SetStaticMesh(RootSMC->StaticMesh);
+	
+		//Materials
+		const int32 MatTotal = RootSMC->GetNumMaterials();
+		for(int32 v = 0; v < MatTotal; v++)
+		{
+			NewISM->Mesh->SetMaterial(v,RootSMC->GetMaterial(v));
+		}
+		 
+		//Set Transforms!
+		for(const FTransform& Each : WorldTransforms)
+		{
+			NewISM->Mesh->AddInstanceWorldSpace(Each);
+		}
+		
+		//Add new ISM!
+		CreatedISMActors.Add(NewISM);
+	}
+	
+	//Clear memory
+	VictoryISMMap.Empty();
+}
+	 
+	
+	 
+void UVictoryBPFunctionLibrary::SaveGameObject_GetAllSaveSlotFileNames(TArray<FString>& FileNames)
+{
+	FileNames.Empty();
+	FString Path = VictoryPaths__SavedDir() + "SaveGames";
+	GetFiles(Path,FileNames); //see top of this file, my own file IO code - Rama
+}
+
+//~~~ Victory Paths ~~~
+
+FString UVictoryBPFunctionLibrary::VictoryPaths__Win64Dir_BinaryLocation()
+{
+	return FString(FPlatformProcess::BaseDir());
+}
+
+FString UVictoryBPFunctionLibrary::VictoryPaths__WindowsNoEditorDir()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::RootDir());
+}
+
+FString UVictoryBPFunctionLibrary::VictoryPaths__GameRootDirectory()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::GameDir());
+}
+
+FString UVictoryBPFunctionLibrary::VictoryPaths__SavedDir()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::GameSavedDir());
+}
+ 
+FString UVictoryBPFunctionLibrary::VictoryPaths__LogsDir()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::GameLogDir());
+}
+
+
+//~~~~~~~~~~~~~~~~~
+	
+	
+FVector2D UVictoryBPFunctionLibrary::Vector2DInterpTo(FVector2D Current, FVector2D Target, float DeltaTime, float InterpSpeed)
+{
+	return FMath::Vector2DInterpTo( Current, Target, DeltaTime, InterpSpeed );
+}
+FVector2D UVictoryBPFunctionLibrary::Vector2DInterpTo_Constant(FVector2D Current, FVector2D Target, float DeltaTime, float InterpSpeed)
+{
+	return FMath::Vector2DInterpConstantTo( Current, Target, DeltaTime, InterpSpeed );
+}
+
+FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyEvent& KeyEvent)
 {
 	FVictoryInput VInput;
 	 
@@ -28,6 +303,7 @@ FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyboardE
 	
 	return VInput;
 }
+
 
 void UVictoryBPFunctionLibrary::VictoryGetAllKeyBindings(TArray<FVictoryInput>& Bindings)
 {
@@ -77,14 +353,6 @@ bool UVictoryBPFunctionLibrary::VictoryReBindKey(FVictoryInput Action)
 	return Found;
 }
 
-
-
-
-
-
-
-
-
 void UVictoryBPFunctionLibrary::GetAllWidgetsOfClass(UObject* WorldContextObject, TSubclassOf<UUserWidget> WidgetClass, TArray<UUserWidget*>& FoundWidgets,bool TopLevelOnly)
 {
 	//Prevent possibility of an ever-growing array if user uses this in a loop
@@ -110,7 +378,7 @@ void UVictoryBPFunctionLibrary::GetAllWidgetsOfClass(UObject* WorldContextObject
 		if(TopLevelOnly)
 		{
 			//only add top level widgets
-			if(Itr->GetIsVisible())			//IsInViewport in 4.6
+			if(Itr->IsInViewport())			
 			{
 				FoundWidgets.Add(*Itr);
 			}
@@ -140,18 +408,78 @@ void UVictoryBPFunctionLibrary::RemoveAllWidgetsOfClass(UObject* WorldContextObj
 		//~~~~~~~~~~~~~~~~~~~
 		 
 		//only add top level widgets
-		if(Itr->GetIsVisible())			//IsInViewport in 4.6
+		if(Itr->IsInViewport())			//IsInViewport in 4.6
 		{
 			Itr->RemoveFromViewport();
 		}
 	}
 }
 
-
+bool UVictoryBPFunctionLibrary::IsWidgetOfClassInViewport(UObject* WorldContextObject, TSubclassOf<UUserWidget> WidgetClass)
+{ 
+	if(!WidgetClass) return false;
+	if(!WorldContextObject) return false;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return false;
+	//~~~~~~~~~~~
+	  
+	for(TObjectIterator<UUserWidget> Itr; Itr; ++Itr)
+	{
+		if(Itr->GetWorld() != World) continue;
+		//~~~~~~~~~~~~~~~~~~~~~
+		
+		if( ! Itr->IsA(WidgetClass)) continue;
+		//~~~~~~~~~~~~~~~~~~~
+		    
+		if(Itr->GetIsVisible())			//IsInViewport in 4.6
+		{
+			return true;
+		}
+	}
+	
+	return false;
+}
  
+void UVictoryBPFunctionLibrary::ServerTravel(UObject* WorldContextObject, FString MapName,bool bNotifyPlayers)
+{ 
+	if(!WorldContextObject) return;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return;
+	//~~~~~~~~~~~
+	 
+	World->ServerTravel(MapName,false,bNotifyPlayers); //abs //notify players
+}
+APlayerStart* UVictoryBPFunctionLibrary::GetPlayerStart(UObject* WorldContextObject,FString PlayerStartName)
+{
+	if(!WorldContextObject) return nullptr;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return nullptr;
+	//~~~~~~~~~~~
+	
+	for(TActorIterator<APlayerStart> Itr(World); Itr; ++Itr)
+	{
+		if(Itr->GetName() == PlayerStartName)
+		{
+			return *Itr;
+		}
+	}
+	return nullptr;
+}
 
 bool UVictoryBPFunctionLibrary::VictorySoundVolumeChange(USoundClass* SoundClassObject, float NewVolume)
  {
+	if(!SoundClassObject) 
+	{
+		return false;
+	}
+	
+	SoundClassObject->Properties.Volume = NewVolume;
+	return true; 
+	   
+	 /*
 	FAudioDevice* Device = GEngine->GetAudioDevice();
 	if (!Device || !SoundClassObject)
 	{
@@ -165,6 +493,12 @@ bool UVictoryBPFunctionLibrary::VictorySoundVolumeChange(USoundClass* SoundClass
 		return true;
 	}
 	return false;
+	*/
+	
+	/*
+		bool SetBaseSoundMix( class USoundMix* SoundMix );
+	
+	*/
  }
 float UVictoryBPFunctionLibrary::VictoryGetSoundVolume(USoundClass* SoundClassObject)
 {
@@ -626,38 +960,58 @@ FVector2D UVictoryBPFunctionLibrary::ProjectWorldToScreenPosition(const FVector&
 
 bool UVictoryBPFunctionLibrary::GetStaticMeshVertexLocations(UStaticMeshComponent* Comp, TArray<FVector>& VertexPositions)
 {
-	if(!Comp) return false;
-	if(!Comp->IsValidLowLevel()) return false;
-	
-	//~~~~~~~~~~~~~~~~~~~~
-	//				Vertex Buffer
-	if(! Comp) 								return false;
-	if(! Comp->StaticMesh) 					return false;
-	if(! Comp->StaticMesh->RenderData) 	return false;
-	if( Comp->StaticMesh->RenderData->LODResources.Num() < 1) return false;
-	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	
-	//~~~~~~~~~~~~
 	VertexPositions.Empty();
-	//~~~~~~~~~~~~
+	 
+	if(!Comp) 						
+	{
+		return false;
+	}
 	
-	FPositionVertexBuffer* VertexBuffer = NULL;
-	VertexBuffer = & Comp->StaticMesh->RenderData->LODResources[0].PositionVertexBuffer;
-	if(!VertexBuffer) return false;
+	if(!Comp->IsValidLowLevel()) 
+	{
+		return false;
+	}
+	//~~~~~~~~~~~~~~~~~~~~~~~
+	
+	//Component Transform
+	FTransform RV_Transform = Comp->GetComponentTransform(); 
+	
+	//Body Setup valid?
+	UBodySetup* BodySetup = Comp->GetBodySetup();
+	
+	if(!BodySetup || !BodySetup->IsValidLowLevel())
+	{
+		return false;
+	}  
+	
+	//Get the Px Mesh!
+	PxTriangleMesh* TriMesh = BodySetup->TriMesh;
+	 
+	if(!TriMesh) 
+	{
+		return false;
+	}
 	//~~~~~~~~~~~~~~~~
 	
-	int32 VertexCount = VertexBuffer->GetNumVertices();
-	 
-	FTransform RV_Transform = Comp->GetComponentTransform(); 
-	for(int32 Itr = 0; Itr < VertexCount; Itr++)
-	{
-		VertexPositions.Add(
-			Comp->GetComponentLocation() + RV_Transform.TransformVector(VertexBuffer->VertexPosition(Itr))
-		);
+	//Number of vertices
+	PxU32 VertexCount 			= TriMesh->getNbVertices();
+	
+	//Vertex array
+	const PxVec3* Vertices 	= TriMesh->getVertices();
+	
+	//For each vertex, transform the position to match the component Transform 
+	for(PxU32 v = 0; v < VertexCount; v++)
+	{ 
+		VertexPositions.Add(RV_Transform.TransformPosition(P2UVector(Vertices[v])));
 	}
 	
 	return true;
-}
+	
+	/*
+	//See this wiki for more info on getting triangles
+	//		https://wiki.unrealengine.com/Accessing_mesh_triangles_and_vertex_positions_in_build
+	*/
+} 
 
 
 void UVictoryBPFunctionLibrary::AddToActorRotation(AActor* TheActor, FRotator AddRot)
@@ -788,6 +1142,83 @@ bool UVictoryBPFunctionLibrary::LoadStringArrayFromFile(TArray<FString>& StringA
 	return true; 
 }
 
+ 
+AActor* UVictoryBPFunctionLibrary::GetClosestActorOfClassInRadiusOfLocation(
+	UObject* WorldContextObject, 
+	TSubclassOf<AActor> ActorClass, 
+	FVector Center, 
+	float Radius, 
+	bool& IsValid
+){ 
+	IsValid = false;
+	
+	//using a context object to get the world!
+    UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return NULL;
+	//~~~~~~~~~~~
+	
+	AActor* ClosestActor 		= NULL;
+	float MinDistanceSq 		= Radius*Radius;	//Max Radius
+	
+	for (TActorIterator<AActor> Itr(World, ActorClass); Itr; ++Itr)
+	{
+		const float DistanceSquared = FVector::DistSquared(Center, Itr->GetActorLocation());
+
+		//Is this the closest possible actor within the max radius?
+		if (DistanceSquared < MinDistanceSq)
+		{
+			ClosestActor = *Itr;					//New Output!
+			MinDistanceSq = DistanceSquared;		//New Min!
+		}
+	}
+
+   IsValid = true;
+   return ClosestActor;
+} 
+
+AActor* UVictoryBPFunctionLibrary::GetClosestActorOfClassInRadiusOfActor(
+	UObject* WorldContextObject, 
+	TSubclassOf<AActor> ActorClass, 
+	AActor* ActorCenter, 
+	float Radius, 
+	bool& IsValid
+){ 
+	IsValid = false;
+	  
+	if(!ActorCenter)
+	{
+		return nullptr;
+	}
+	
+	const FVector Center = ActorCenter->GetActorLocation();
+	
+	//using a context object to get the world!
+    UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return NULL;
+	//~~~~~~~~~~~
+	
+	AActor* ClosestActor 		= NULL;
+	float MinDistanceSq 		= Radius*Radius;	//Max Radius
+	
+	for (TActorIterator<AActor> Itr(World, ActorClass); Itr; ++Itr)
+	{
+		//Skip ActorCenter!
+		if(*Itr == ActorCenter) continue;
+		//~~~~~~~~~~~~~~~~~
+		
+		const float DistanceSquared = FVector::DistSquared(Center, Itr->GetActorLocation());
+
+		//Is this the closest possible actor within the max radius?
+		if (DistanceSquared < MinDistanceSq)
+		{
+			ClosestActor = *Itr;					//New Output!
+			MinDistanceSq = DistanceSquared;		//New Min!
+		}
+	}
+
+   IsValid = true;
+   return ClosestActor;
+}
 
 void UVictoryBPFunctionLibrary::Selection_SelectionBox(UObject* WorldContextObject,TArray<AActor*>& SelectedActors, FVector2D AnchorPoint,FVector2D DraggedPoint,TSubclassOf<AActor> ClassFilter)
 {
@@ -823,8 +1254,8 @@ bool UVictoryBPFunctionLibrary::PlayerController_GetControllerID(APlayerControll
 	
 	ULocalPlayer * LP = Cast<ULocalPlayer>(ThePC->Player);
     if(!LP) return false;
- 
-    ControllerID = LP->ControllerId;
+  
+    ControllerID = LP->GetControllerId();
 	
 	return true;
 }
@@ -997,6 +1428,10 @@ FString UVictoryBPFunctionLibrary::String__CombineStrings(FString StringFirst, F
 {
 	return StringFirstLabel + StringFirst + Separator + StringSecondLabel + StringSecond;
 }
+FString UVictoryBPFunctionLibrary::String__CombineStrings_Multi(FString A, FString B)
+{  
+	return A + " " + B;
+}
 
 bool UVictoryBPFunctionLibrary::OptionsMenu__GetDisplayAdapterScreenResolutions(TArray<int32>& Widths, TArray<int32>& Heights, TArray<int32>& RefreshRates,bool IncludeRefreshRates)
 {
@@ -1046,11 +1481,11 @@ bool UVictoryBPFunctionLibrary::OptionsMenu__GetDisplayAdapterScreenResolutions(
 
 AStaticMeshActor* UVictoryBPFunctionLibrary::Clone__StaticMeshActor(UObject* WorldContextObject, bool&IsValid, AStaticMeshActor* ToClone, FVector LocationOffset,FRotator RotationOffset)
 {
-	IsValid = NULL;
+	IsValid = false;
 	if(!ToClone) return NULL;
 	if(!ToClone->IsValidLowLevel()) return NULL;
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	
+	  
 	if(!WorldContextObject) return NULL;
 	
 	//using a context object to get the world!
@@ -1065,7 +1500,7 @@ AStaticMeshActor* UVictoryBPFunctionLibrary::Clone__StaticMeshActor(UObject* Wor
 	SpawnInfo.bNoCollisionFail 		= true;
 	SpawnInfo.Owner 				= ToClone;
 	SpawnInfo.Instigator				= NULL;
-	SpawnInfo.bDeferConstruction 	= NULL;
+	SpawnInfo.bDeferConstruction 	= false;
 	
 	AStaticMeshActor* NewSMA = World->SpawnActor<AStaticMeshActor>(SpawnClass, ToClone->GetActorLocation() + FVector(0,0,512) ,ToClone->GetActorRotation(), SpawnInfo );
 	
@@ -1323,29 +1758,41 @@ bool UVictoryBPFunctionLibrary::Animation__GetAimOffsetsFromRotation(AActor * An
 	return true;
 }
 
-void UVictoryBPFunctionLibrary::Visibility__GetRenderedActors(TArray<AActor*>& CurrentlyRenderedActors, float MinRecentTime)
+void UVictoryBPFunctionLibrary::Visibility__GetRenderedActors(UObject* WorldContextObject, TArray<AActor*>& CurrentlyRenderedActors, float MinRecentTime)
 {
+	if(!WorldContextObject) return;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return;
+	//~~~~~~~~~~~
+	
 	//Empty any previous entries
 	CurrentlyRenderedActors.Empty();
 	
 	//Iterate Over Actors
-	for ( TObjectIterator<AActor> Itr; Itr; ++Itr )
+	for ( TActorIterator<AActor> Itr(World); Itr; ++Itr )
 	{
-		if (Itr->GetLastRenderTime() > MinRecentTime)
+		if (World->GetTimeSeconds() - Itr->GetLastRenderTime() <= MinRecentTime)
 		{
 			CurrentlyRenderedActors.Add( * Itr);
 		}
-	}
-}
-void UVictoryBPFunctionLibrary::Visibility__GetNotRenderedActors(TArray<AActor*>& CurrentlyNotRenderedActors, float MinRecentTime)
+	} 
+} 
+void UVictoryBPFunctionLibrary::Visibility__GetNotRenderedActors(UObject* WorldContextObject, TArray<AActor*>& CurrentlyNotRenderedActors, float MinRecentTime)
 {
+	if(!WorldContextObject) return;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return;
+	//~~~~~~~~~~~
+	
 	//Empty any previous entries
 	CurrentlyNotRenderedActors.Empty();
 	
 	//Iterate Over Actors
-	for ( TObjectIterator<AActor> Itr; Itr; ++Itr )
+	for ( TActorIterator<AActor> Itr(World); Itr; ++Itr )
 	{
-		if (Itr->GetLastRenderTime() <= MinRecentTime)
+		if (World->GetTimeSeconds() - Itr->GetLastRenderTime() > MinRecentTime)
 		{
 			CurrentlyNotRenderedActors.Add( * Itr);
 		}
@@ -1430,7 +1877,46 @@ bool UVictoryBPFunctionLibrary::FileIO__SaveStringTextToFile(
 	
 	return FFileHelper::SaveStringToFile(SaveText, * SaveDirectory);
 }
-
+bool UVictoryBPFunctionLibrary::FileIO__SaveStringArrayToFile(FString SaveDirectory, FString JoyfulFileName, TArray<FString> SaveText, bool AllowOverWriting)  
+{
+	//Dir Exists?
+	if ( !FPlatformFileManager::Get().GetPlatformFile().DirectoryExists( *SaveDirectory))
+	{
+		//create directory if it not exist
+		FPlatformFileManager::Get().GetPlatformFile().CreateDirectory( *SaveDirectory);
+		
+		//still could not make directory?
+		if (!FPlatformFileManager::Get().GetPlatformFile().DirectoryExists( *SaveDirectory))
+		{
+			//Could not make the specified directory
+			return false;
+			//~~~~~~~~~~~~~~~~~~~~~~
+		}
+	}
+	
+	//get complete file path
+	SaveDirectory += "\\";
+	SaveDirectory += JoyfulFileName;
+	
+	//No over-writing?
+	if (!AllowOverWriting)
+	{
+		//Check if file exists already
+		if (FPlatformFileManager::Get().GetPlatformFile().FileExists( * SaveDirectory))
+		{
+			//no overwriting
+			return false;
+		}
+	}
+	 
+	FString FinalStr = "";
+	for(FString& Each : SaveText)
+	{
+		FinalStr += Each;
+		FinalStr += LINE_TERMINATOR;
+	}
+	return FFileHelper::SaveStringToFile(FinalStr, * SaveDirectory);
+}
 float UVictoryBPFunctionLibrary::Calcs__ClosestPointToSourcePoint(const FVector & Source, const TArray<FVector>& OtherPoints, FVector& ClosestPoint)
 {
 	float CurDist = 0;
@@ -2422,6 +2908,116 @@ void UVictoryBPFunctionLibrary::JoyGraphicsSettings__FullScreen_Set(TEnumAsByte<
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //			  Contributed by Others
 
+	/**
+	* Contributed by: SaxonRah
+	* Better random numbers. Seeded with a random device. if the random device's entropy is 0; defaults to current time for seed.
+	* can override with seed functions;
+	*/
+//----------------------------------------------------------------------------------------------BeginRANDOM
+	std::random_device rd;		
+	unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+
+	std::mt19937 rand_MT;
+	std::default_random_engine rand_DRE;
+
+	/** Construct a random device and set seed for engines dependent on entropy */
+	void UVictoryBPFunctionLibrary::constructRand()
+	{
+		seed = std::chrono::system_clock::now().time_since_epoch().count();
+
+		if (rd.entropy() == 0)
+		{
+			seedRand(seed);
+		}else{
+			seedRand(rd());
+		}
+	}
+	/** Set seed for Rand */
+	void UVictoryBPFunctionLibrary::seedRand(int32 _seed)
+	{
+		seed = _seed;
+	}
+
+	/** Set seed with time for Rand */
+	void UVictoryBPFunctionLibrary::seedRandWithTime()
+	{
+		seed = std::chrono::system_clock::now().time_since_epoch().count();
+	}
+
+	/** Set seed with entropy for Rand */
+	void UVictoryBPFunctionLibrary::seedRandWithEntropy()
+	{
+		seedRand(rd());
+	}
+
+	/** Random Bool - Bernoulli distribution */
+	bool UVictoryBPFunctionLibrary::RandBool_Bernoulli(float fBias)
+	{
+		std::bernoulli_distribution dis(fBias);
+		return dis(rand_DRE);
+	}
+
+	/** Random Integer - Uniform distribution */
+	int32 UVictoryBPFunctionLibrary::RandInt_uniDis()
+	{
+		std::uniform_int_distribution<int32> dis(0, 1);
+		return dis(rand_DRE);
+	}
+	/** Random Integer - Uniform distribution */
+	int32 UVictoryBPFunctionLibrary::RandInt_MINMAX_uniDis(int32 iMin, int32 iMax)
+	{
+		std::uniform_int_distribution<int32> dis(iMin, iMax);
+		return dis(rand_DRE);
+	}
+
+	/** Random Float - Zero to One Uniform distribution */
+	float UVictoryBPFunctionLibrary::RandFloat_uniDis()
+	{
+		std::uniform_real_distribution<float> dis(0, 1);
+		return dis(rand_DRE);
+	}
+	/** Random Float - MIN to MAX Uniform distribution */
+	float UVictoryBPFunctionLibrary::RandFloat_MINMAX_uniDis(float iMin, float iMax)
+	{
+		std::uniform_real_distribution<float> dis(iMin, iMax);
+		return dis(rand_DRE);
+	}
+
+	/** Random Bool - Bernoulli distribution  -  Mersenne Twister */
+	bool UVictoryBPFunctionLibrary::RandBool_Bernoulli_MT(float fBias)
+	{
+		std::bernoulli_distribution dis(fBias);
+		return dis(rand_MT);
+	}
+
+	/** Random Integer - Uniform distribution  -  Mersenne Twister */
+	int32 UVictoryBPFunctionLibrary::RandInt_uniDis_MT()
+	{
+		std::uniform_int_distribution<int32> dis(0, 1);
+		return dis(rand_MT);
+	}
+	/** Random Integer - Uniform distribution  -  Mersenne Twister */
+	int32 UVictoryBPFunctionLibrary::RandInt_MINMAX_uniDis_MT(int32 iMin, int32 iMax)
+	{
+		std::uniform_int_distribution<int32> dis(iMin, iMax);
+		return dis(rand_MT);
+	}
+
+	/** Random Float - Zero to One Uniform distribution  -  Mersenne Twister */
+	float UVictoryBPFunctionLibrary::RandFloat_uniDis_MT()
+	{
+		std::uniform_real_distribution<float> dis(0, 1);
+		return dis(rand_MT);
+	}
+	/** Random Float - MIN to MAX Uniform distribution  -  Mersenne Twister */
+	float UVictoryBPFunctionLibrary::RandFloat_MINMAX_uniDis_MT(float iMin, float iMax)
+	{
+		std::uniform_real_distribution<float> dis(iMin, iMax);
+		return dis(rand_MT);
+	}
+//----------------------------------------------------------------------------------------------ENDRANDOM
+
+
 
 void UVictoryBPFunctionLibrary::String__ExplodeString(TArray<FString>& OutputStrings, FString InputString, FString Separator, int32 limit, bool bTrimElements)
 {
@@ -2498,11 +3094,11 @@ void UVictoryBPFunctionLibrary::String__ExplodeString(TArray<FString>& OutputStr
 	}
 }
 
-UTexture2D* UVictoryBPFunctionLibrary::GetTexture2DFromFile(const FString& FilePath)
+UTexture2D* UVictoryBPFunctionLibrary::LoadTexture2D_FromDDSFile(const FString& FullFilePath)
 {
 	UTexture2D* Texture = NULL;
 
-	FString TexturePath = FilePath;//FPaths::GameContentDir( ) + TEXT( "../Data/" ) + TextureFilename;
+	FString TexturePath = FullFilePath;//FPaths::GameContentDir( ) + TEXT( "../Data/" ) + TextureFilename;
 	TArray<uint8> FileData;
 
 	/* Load DDS texture */
@@ -2527,15 +3123,10 @@ UTexture2D* UVictoryBPFunctionLibrary::GetTexture2DFromFile(const FString& FileP
 
 			/* Create transient texture */
 			Texture = UTexture2D::CreateTransient( DDSLoadHelper.DDSHeader->dwWidth, DDSLoadHelper.DDSHeader->dwHeight, Format );
-			
-			#if WITH_EDITOR
-			Texture->MipGenSettings = TMGS_LeaveExistingMips;
-			#endif  //WITH_EDITOR
-			
+			if(!Texture) return NULL;
 			Texture->PlatformData->NumSlices = 1;
 			Texture->NeverStream = true;
-			//Texture->Rename(  );
-
+		
 			/* Get pointer to actual data */
 			uint8* DataPtr = (uint8*) DDSLoadHelper.GetDDSDataPointer( );
 
@@ -2597,6 +3188,102 @@ UTexture2D* UVictoryBPFunctionLibrary::GetTexture2DFromFile(const FString& FileP
 	return Texture;
 }
 
+
+//this is how you can make cpp only internal functions!
+static EImageFormat::Type GetJoyImageFormat(EJoyImageFormats JoyFormat)
+{
+	/*
+	ImageWrapper.h
+	namespace EImageFormat
+	{
+	
+	Enumerates the types of image formats this class can handle
+	
+	enum Type
+	{
+		//Portable Network Graphics
+		PNG,
+
+		//Joint Photographic Experts Group 
+		JPEG,
+
+		//Single channel jpeg
+		GrayscaleJPEG,	
+
+		//Windows Bitmap 
+		BMP,
+
+		//Windows Icon resource 
+		ICO,
+
+		//OpenEXR (HDR) image file format 
+		EXR,
+
+		//Mac icon 
+		ICNS
+	};
+};
+	*/
+	switch(JoyFormat)
+	{
+		case EJoyImageFormats::JPG : return EImageFormat::JPEG;
+		case EJoyImageFormats::PNG : return EImageFormat::PNG;
+		case EJoyImageFormats::BMP : return EImageFormat::BMP;
+		case EJoyImageFormats::ICO : return EImageFormat::ICO;
+		case EJoyImageFormats::EXR : return EImageFormat::EXR;
+		case EJoyImageFormats::ICNS : return EImageFormat::ICNS;
+	}
+	return EImageFormat::JPEG;
+} 
+UTexture2D* UVictoryBPFunctionLibrary::Victory_LoadTexture2D_FromFile(const FString& FullFilePath,EJoyImageFormats ImageFormat, bool& IsValid,int32& Width, int32& Height)
+{
+	
+	
+	IsValid = false;
+	UTexture2D* LoadedT2D = NULL;
+	
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	// Note: PNG format.  Other formats are supported
+	IImageWrapperPtr ImageWrapper = ImageWrapperModule.CreateImageWrapper(GetJoyImageFormat(ImageFormat));
+ 
+	//Load From File
+	TArray<uint8> RawFileData;
+	if (!FFileHelper::LoadFileToArray(RawFileData, *FullFilePath)) return NULL;
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	  
+	//Create T2D!
+	if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(RawFileData.GetData(), RawFileData.Num()))
+	{ 
+		const TArray<uint8>* UncompressedBGRA = NULL;
+		if (ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, UncompressedBGRA))
+		{
+			LoadedT2D = UTexture2D::CreateTransient(ImageWrapper->GetWidth(), ImageWrapper->GetHeight(), PF_B8G8R8A8);
+			
+			//Valid?
+			if(!LoadedT2D) return NULL;
+			//~~~~~~~~~~~~~~
+			
+			//Out!
+			Width = ImageWrapper->GetWidth();
+			Height = ImageWrapper->GetHeight();
+			 
+			//Copy!
+			void* TextureData = LoadedT2D->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+			FMemory::Memcpy(TextureData, UncompressedBGRA->GetData(), UncompressedBGRA->Num());
+			LoadedT2D->PlatformData->Mips[0].BulkData.Unlock();
+
+			//Update!
+			LoadedT2D->UpdateResource();
+		}
+	}
+	 
+	// Success!
+	IsValid = true;
+	return LoadedT2D;
+}
+
+
+
 class UAudioComponent* UVictoryBPFunctionLibrary::PlaySoundAttachedFromFile(const FString& FilePath, class USceneComponent* AttachToComponent, FName AttachPointName, FVector Location, EAttachLocation::Type LocationType, bool bStopWhenAttachedToDestroyed, float VolumeMultiplier, float PitchMultiplier, float StartTime, class USoundAttenuation* AttenuationSettings)
 {	
 	USoundWave* sw = GetSoundWaveFromFile(FilePath);
@@ -2630,14 +3317,14 @@ class USoundWave* UVictoryBPFunctionLibrary::GetSoundWaveFromFile(const FString&
 	//* loaded song file (binary, encoded)
 	TArray < uint8 > rawFile;
 
-	loaded = FFileHelper::LoadFileToArray(rawFile, FilePath.GetCharArray().GetTypedData());
+	loaded = FFileHelper::LoadFileToArray(rawFile, FilePath.GetCharArray().GetData());
 
 	if (loaded)
 	{
 		FByteBulkData* bulkData = &sw->CompressedFormatData.GetFormat(TEXT("OGG"));
 
 		bulkData->Lock(LOCK_READ_WRITE);
-		FMemory::Memcpy(bulkData->Realloc(rawFile.Num()), rawFile.GetTypedData(), rawFile.Num());
+		FMemory::Memcpy(bulkData->Realloc(rawFile.Num()), rawFile.GetData(), rawFile.Num());
 		bulkData->Unlock();
 
 		loaded = fillSoundWaveInfo(sw, &rawFile) == 0 ? true : false;
@@ -2653,7 +3340,7 @@ int32 UVictoryBPFunctionLibrary::fillSoundWaveInfo(class USoundWave* sw, TArray<
 {
     FSoundQualityInfo info;
     FVorbisAudioInfo vorbis_obj = FVorbisAudioInfo();
-    if (!vorbis_obj.ReadCompressedInfo(rawFile->GetTypedData(), rawFile->Num(), &info))
+    if (!vorbis_obj.ReadCompressedInfo(rawFile->GetData(), rawFile->Num(), &info))
     {
         //Debug("Can't load header");
         return 1;
@@ -2710,6 +3397,252 @@ int32 UVictoryBPFunctionLibrary::findSource(class USoundWave* sw, class FSoundSo
 	return -2;
 }
 
+
+//~~~ Kris ~~~
+bool UVictoryBPFunctionLibrary::CaptureComponent2D_Project(class USceneCaptureComponent2D* Target, FVector Location, FVector2D& OutPixelLocation)
+{
+    if ((Target == nullptr) || (Target->TextureTarget == nullptr))
+    {
+        return false;
+    }
+    
+    const FTransform& Transform = Target->GetComponentToWorld();
+    FMatrix ViewMatrix = Transform.ToInverseMatrixWithScale();
+    FVector ViewLocation = Transform.GetTranslation();
+
+    // swap axis st. x=z,y=x,z=y (unreal coord space) so that z is up
+    ViewMatrix = ViewMatrix * FMatrix(
+        FPlane(0,    0,    1,    0),
+        FPlane(1,    0,    0,    0),
+        FPlane(0,    1,    0,    0),
+        FPlane(0,    0,    0,    1));
+
+    const float FOV = Target->FOVAngle * (float)PI / 360.0f;
+
+    FIntPoint CaptureSize(Target->TextureTarget->GetSurfaceWidth(), Target->TextureTarget->GetSurfaceHeight());
+    
+    float XAxisMultiplier;
+    float YAxisMultiplier;
+
+    if (CaptureSize.X > CaptureSize.Y)
+    {
+        // if the viewport is wider than it is tall
+        XAxisMultiplier = 1.0f;
+        YAxisMultiplier = CaptureSize.X / (float)CaptureSize.Y;
+    }
+    else
+    {
+        // if the viewport is taller than it is wide
+        XAxisMultiplier = CaptureSize.Y / (float)CaptureSize.X;
+        YAxisMultiplier = 1.0f;
+    }
+
+    FMatrix    ProjectionMatrix = FReversedZPerspectiveMatrix (
+        FOV,
+        FOV,
+        XAxisMultiplier,
+        YAxisMultiplier,
+        GNearClippingPlane,
+        GNearClippingPlane
+        );
+
+    FMatrix ViewProjectionMatrix = ViewMatrix * ProjectionMatrix;
+
+    FVector4 ScreenPoint = ViewProjectionMatrix.TransformFVector4(FVector4(Location,1));
+    
+    if (ScreenPoint.W > 0.0f)
+    {
+        float InvW = 1.0f / ScreenPoint.W;
+        float Y = (GProjectionSignY > 0.0f) ? ScreenPoint.Y : 1.0f - ScreenPoint.Y;
+        FIntRect ViewRect = FIntRect(0, 0, CaptureSize.X, CaptureSize.Y);
+        OutPixelLocation = FVector2D(
+            ViewRect.Min.X + (0.5f + ScreenPoint.X * 0.5f * InvW) * ViewRect.Width(),
+            ViewRect.Min.Y + (0.5f - Y * 0.5f * InvW) * ViewRect.Height()
+            );
+        return true;
+    }
+
+    return false;
+}    
+
+bool UVictoryBPFunctionLibrary::Capture2D_Project(class ASceneCapture2D* Target, FVector Location, FVector2D& OutPixelLocation)
+{
+    return (Target) ? CaptureComponent2D_Project(Target->GetCaptureComponent2D(), Location, OutPixelLocation) : false;
+}
+ 
+UTextureRenderTarget2D* UVictoryBPFunctionLibrary::CreateTextureRenderTarget2D(int32 InSizeX, int32 InSizeY, FLinearColor ClearColor)
+{ 
+    UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>();
+    
+    if (RenderTarget)
+    {
+        RenderTarget->AddToRoot();
+        RenderTarget->ClearColor = ClearColor;
+        RenderTarget->InitAutoFormat((InSizeX == 0) ? 256 : InSizeX, (InSizeY == 0) ? 256 : InSizeY);
+    }
+    
+    return RenderTarget;
+}
+
+static IImageWrapperPtr GetImageWrapperByExtention(const FString InImagePath)
+{
+    IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+    if (InImagePath.EndsWith(".png"))
+    {
+        return ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+    }
+    else if (InImagePath.EndsWith(".jpg") || InImagePath.EndsWith(".jpeg"))
+    {
+        return ImageWrapperModule.CreateImageWrapper(EImageFormat::JPEG);
+    }
+    else if (InImagePath.EndsWith(".bmp"))
+    {
+        return ImageWrapperModule.CreateImageWrapper(EImageFormat::BMP);
+    }
+    else if (InImagePath.EndsWith(".ico"))
+    {
+        return ImageWrapperModule.CreateImageWrapper(EImageFormat::ICO);
+    }
+    else if (InImagePath.EndsWith(".exr"))
+    {
+        return ImageWrapperModule.CreateImageWrapper(EImageFormat::EXR);
+    }
+    else if (InImagePath.EndsWith(".icns"))
+    {
+        return ImageWrapperModule.CreateImageWrapper(EImageFormat::ICNS);
+    }
+    
+    return nullptr;
+}
+
+
+bool UVictoryBPFunctionLibrary::CaptureComponent2D_SaveImage(class USceneCaptureComponent2D* Target, const FString InImagePath)
+{
+    // Bad scene capture component! No render target! Stay! Stay! Ok, feed!... wait, where was I?
+    if ((Target == nullptr) || (Target->TextureTarget == nullptr))
+    {
+        return false;
+    }
+    
+    FRenderTarget* RenderTarget = Target->TextureTarget->GameThread_GetRenderTargetResource();
+    if (RenderTarget == nullptr)
+    {
+        return false;
+    }
+ 
+    const int32 Width = Target->TextureTarget->SizeX;
+    const int32 Height = Target->TextureTarget->SizeY;
+      
+    const EPixelFormat PixelFormat = Target->TextureTarget->GetFormat();
+    const int32 ImageBytes = CalculateImageBytes(Width, Height, 0, PixelFormat);
+									//build.cs "RenderCore"
+    TArray<FColor> RawPixels;
+    RawPixels.AddUninitialized(ImageBytes);
+
+    if (!RenderTarget->ReadPixels(RawPixels))
+    {
+        return false;
+    }
+
+    for (auto& Pixel : RawPixels)
+    {
+        Pixel.A = 255; // Thank Rama (again) for figuring this out.
+    }
+    
+    IImageWrapperPtr ImageWrapper = GetImageWrapperByExtention(InImagePath);
+
+    if (ImageWrapper.IsValid() &&  ImageWrapper->SetRaw(&RawPixels[0], ImageBytes, Width, Height,  ERGBFormat::BGRA, 8))
+    {
+        FFileHelper::SaveArrayToFile(ImageWrapper->GetCompressed(), *InImagePath);
+        return true;
+    }
+    
+    return false;
+}
+
+bool UVictoryBPFunctionLibrary::Capture2D_SaveImage(class ASceneCapture2D* Target, const FString InImagePath)
+{
+    return (Target) ? CaptureComponent2D_SaveImage(Target->GetCaptureComponent2D(), InImagePath) : false;
+}
+  
+UTexture2D* UVictoryBPFunctionLibrary::LoadTexture2D_FromFileByExtension(const FString InImagePath,  bool& IsValid, int32& OutWidth, int32& OutHeight)
+{
+    UTexture2D* Texture = nullptr;
+    IsValid = false;
+
+    TArray<uint8> CompressedData;
+    if (!FFileHelper::LoadFileToArray(CompressedData, *InImagePath))
+    {
+        return nullptr;
+    }
+    
+    IImageWrapperPtr ImageWrapper = GetImageWrapperByExtention(InImagePath);
+
+    if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(CompressedData.GetData(), CompressedData.Num()))
+    { 
+        const TArray<uint8>* UncompressedBGRA = nullptr;
+        
+        if (ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, UncompressedBGRA))
+        {
+            Texture = UTexture2D::CreateTransient(ImageWrapper->GetWidth(), ImageWrapper->GetHeight(), PF_B8G8R8A8);
+            
+            if (Texture != nullptr)
+            {
+                IsValid = true;
+                
+                OutWidth = ImageWrapper->GetWidth();
+                OutHeight = ImageWrapper->GetHeight();
+
+                void* TextureData = Texture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+                FMemory::Memcpy(TextureData, UncompressedBGRA->GetData(), UncompressedBGRA->Num());
+                Texture->PlatformData->Mips[0].BulkData.Unlock();
+                Texture->UpdateResource();
+            }
+        }
+    }
+
+    return Texture;
+}
+
+
+
+
+//~~~~~~~~~ END OF CONTRIBUTED BY KRIS ~~~~~~~~~~~
+ 
+
+
+//~~~ Inspired by Sahkan ~~~
+void UVictoryBPFunctionLibrary::Actor__GetAttachedActors(AActor* ParentActor,TArray<AActor*>& ActorsArray)
+{
+	if(!ParentActor) return;
+	//~~~~~~~~~~~~
+	
+	ActorsArray.Empty(); 
+	ParentActor->GetAttachedActors(ActorsArray);
+}
+ 
+void UVictoryBPFunctionLibrary::SetBloomIntensity(APostProcessVolume* PostProcessVolume,float Intensity)
+{
+	if(!PostProcessVolume) return;
+	//~~~~~~~~~~~~~~~~
+	
+	PostProcessVolume->Settings.bOverride_BloomIntensity 	= true;
+	PostProcessVolume->Settings.BloomIntensity 				= Intensity;
+}
+
+
+//~~~ Key To Truth ~~~
+//.cpp
+//Append different text strings with optional pins.
+FString UVictoryBPFunctionLibrary::AppendMultiple(FString A, FString B)
+{  
+    FString Result = "";
+
+	Result += A;
+    Result += B;
+	 
+    return Result;
+}
 
 
 //TESTING

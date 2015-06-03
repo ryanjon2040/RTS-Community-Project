@@ -12,8 +12,16 @@ public class VictoryBPLibrary : ModuleRules
 				"CoreUObject", 
 				"Engine", 
 				"InputCore",
+				
 				"RHI",
-				"UMG", "Slate", "SlateCore"
+				"RenderCore",
+				 
+				"HTTP",
+				"UMG", "Slate", "SlateCore",
+				
+				"ImageWrapper",
+				
+				"PhysX", "APEX" 
 			}
 		);
 		//Private Paths

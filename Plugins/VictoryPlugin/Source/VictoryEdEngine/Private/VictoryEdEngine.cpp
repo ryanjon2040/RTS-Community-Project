@@ -17,7 +17,7 @@ FMyEditorModeFactory::FMyEditorModeFactory()
 }
 FMyEditorModeFactory::~FMyEditorModeFactory()
 {
-	
+	 
 }
 void FMyEditorModeFactory::OnSelectionChanged( FEditorModeTools& Tools, UObject* ItemUndergoingChange ) const
 {
@@ -65,9 +65,13 @@ TSharedRef<FEdMode> FMyEditorModeFactory::CreateMode() const
 
 
 
-UVictoryEdEngine::UVictoryEdEngine(const class FPostConstructInitializeProperties& PCIP)
-	: Super(PCIP)
+UVictoryEdEngine::UVictoryEdEngine(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
 {
+	CurrentVerticiesScale = 12;
+	VertexDisplayChoice = 0; //stars
+	DrawVerticiesMode = 2; //show all
+	 
 	CreatedVictoryEdMode = false;
 	
 	PrevModeID = FBuiltinEditorModes::EM_Default;
@@ -115,6 +119,24 @@ void UVictoryEdEngine::SwitchToVictoryEdMode()
 	GLevelEditorModeTools().ActivateMode(VictoryEditorModeID);
 }
 
+bool UVictoryEdEngine::Exec( UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar)
+{
+	bool bHandled = Super::Exec(InWorld,Cmd,Ar);
+	//~~~~~~~~~~~~~~~
+	
+	if ( FParse::Command(&Cmd,TEXT("VictoryConsole")) )
+	{
+		VictoryConsole();
+		return true;
+	} 
+	
+	return bHandled;
+}
+void UVictoryEdEngine::VictoryConsole()
+{  
+	UE_LOG(Victory, Warning, TEXT("Victory!!!!"));
+}
+
 void UVictoryEdEngine::RunTests()
 {
 	//tests
@@ -151,35 +173,28 @@ void UVictoryEdEngine::NoteSelectionChange()
 	if(!SelectedActor) return;
 	//~~~~~~~~~~~~~~~
 	
-	
+	 
 	//Not the Same?
 	if(SelectedActor != VSelectedActor)
 	{
-		//UNDO SAVE After MOVE
-		const FScopedTransaction Transaction( NSLOCTEXT("Snap","VictoryGame", "Victory Vertex Snap" )  );
-		SelectedActor->Modify();
-	
 		ClearSelectedVertex = true;
 	}
 	
 	//Update
 	VSelectedActor = SelectedActor;
+	SelectedJoyISM = Cast<AJoyISM>(SelectedActor);
 	
 	if(!VSelectedActor) return;
-	 
-	//For Editor Undo / Redo
-	//		does this flag ever need to be unset?!?!?!?
-	VSelectedActor->SetFlags(RF_Transactional);
-	
+	  
 	//Always Refresh
 	SelectedActorVerticiesNeedsUpdating = true;
 	
 	//For use with multi-select moves
 	GetSelectedActorsRelativeOffsets();
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	
+	 
 	//Only Activate for Static Mesh Actors Currently
-	if(SelectedActor->IsA(AStaticMeshActor::StaticClass()))
+	if(SelectedActor->IsA(AStaticMeshActor::StaticClass()) || SelectedActor->IsA(AJoyISM::StaticClass()))
 	{
 		//Switch to Victory Align Mode if not active already
 		if(!GLevelEditorModeTools().IsModeActive(VictoryEditorModeID)) 
@@ -208,6 +223,5 @@ void UVictoryEdEngine::NoteSelectionChange()
 void UVictoryEdEngine::Tick(float DeltaSeconds, bool bIdleMode)
 {
 	Super::Tick(DeltaSeconds,bIdleMode);
-	
-
+	 
 }

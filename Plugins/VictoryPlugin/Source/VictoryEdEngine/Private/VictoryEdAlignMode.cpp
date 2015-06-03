@@ -12,6 +12,46 @@
 
 #define CHECK_VSELECTED if(!VictoryEngine) return; if(!VictoryEngine->VSelectedActor) return;
 
+
+
+
+
+//~~~
+
+#define BOOLSTR(TheBool)  ( (TheBool) ? FString("true") : FString("false") )
+
+//~~~
+
+//Current Class Name + Function Name where this is called!
+#define JOYSTR_CUR_CLASS_FUNC (FString(__FUNCTION__))
+
+//Current Class where this is called!
+#define JOYSTR_CUR_CLASS (FString(__FUNCTION__).Left(FString(__FUNCTION__).Find(TEXT(":"))) )
+
+//Current Function Name where this is called!
+#define JOYSTR_CUR_FUNC (FString(__FUNCTION__).Right(FString(__FUNCTION__).Len() - FString(__FUNCTION__).Find(TEXT("::")) - 2 ))
+  
+//Current Line Number in the code where this is called!
+#define JOYSTR_CUR_LINE  (FString::FromInt(__LINE__))
+
+//Current Class and Line Number where this is called!
+#define JOYSTR_CUR_CLASS_LINE (JOYSTR_CUR_CLASS + "(" + JOYSTR_CUR_LINE + ")")
+  
+//Current Function Signature where this is called!
+#define JOYSTR_CUR_FUNCSIG (FString(__FUNCSIG__))
+
+#define V_LOG(Param1) 			UE_LOG(Victory,Warning,TEXT("%s: %s"), *JOYSTR_CUR_CLASS_LINE, *FString(Param1))
+#define V_LOG2(Param1,Param2) 	UE_LOG(Victory,Warning,TEXT("%s: %s %s"), *JOYSTR_CUR_CLASS_LINE, *FString(Param1),*FString(Param2))
+#define V_LOGF(Param1,Param2) 	UE_LOG(Victory,Warning,TEXT("%s: %s %f"), *JOYSTR_CUR_CLASS_LINE, *FString(Param1),float(Param2))
+ 
+
+
+
+
+
+
+
+
 //~~~ Display Choices ~~~
 #define VERTEX_DISPLAY_STARS 		0
 #define VERTEX_DISPLAY_3DBOX 		1
@@ -84,14 +124,10 @@ void FVictoryEdAlignMode::JoyInit(UVictoryEdEngine* EnginePtr)
 	//Enable Realtime
 	ReEntering = true;
 	
-	//Verticies
-	DrawVerticiesMode = 2;
-	VertexDisplayChoice = VERTEX_DISPLAY_STARS;
-	
 	//~~~
 	
 	UsingMouseInstantMove = false;
-	CurrentVerticiesScale = 12;
+	
 	
 	//~~~
 	
@@ -150,10 +186,205 @@ void FVictoryEdAlignMode::Enter()
 	
 	//~~~~~~~~~~~~~~~~
 	
-	//testing
+
+}
+
+void FVictoryEdAlignMode::VictoryTitleAppears()
+{
+	CHECK_VSELECTED
+	 
+	if(VictoryEngine->DrawVerticiesMode != 1) return;
+	//~~~~~~~~~~~~~~~~~~~~~~
+	
+	VictoryTitleAppearTime = FDateTime::Now();
+	VictoryTitleAlpha = 1;
+	VictoryTitleVisible = true;
+	FadeInVictoryTitle = false;
+}
+	
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+void FVictoryEdAlignMode::ReverseJoyISM()
+{
+	  
 	CHECK_VSELECTED
 	
-	//CreateUModel();
+	//Current World
+	UWorld* World = GetWorld();
+	if(!World) return;
+	//~~~~~~~~~~~~~~
+	
+	const FScopedTransaction Transaction(LOCTEXT("RevertSelectedInstancedStaticMesh", "Revert Instanced Static Mesh Actor to individual Static Mesh Actors"));
+	
+	AJoyISM* JoyISM = Cast<AJoyISM>(VictoryEngine->VSelectedActor);
+	if(!JoyISM) 
+	{
+		//Not a JoyISM!
+		return;
+	}
+	
+	FActorSpawnParameters SpawnInfo;
+	SpawnInfo.bNoCollisionFail 		= true;
+	SpawnInfo.bDeferConstruction 	= false;
+	
+	TArray<FTransform> Transforms;
+	int32 Total = JoyISM->Mesh->GetInstanceCount();
+	for(int32 v = 0; v < Total; v++)
+	{
+		FTransform Transform;
+		JoyISM->Mesh->GetInstanceTransform(v,Transform,true); //world space!
+		Transforms.Add(Transform);
+	} 
+	
+	//for each Transform in world space
+	for(FTransform& Each : Transforms)
+	{ 
+		AStaticMeshActor* EachSMA = World->SpawnActor<AStaticMeshActor>(
+			AStaticMeshActor::StaticClass(), 
+			JoyISM->GetActorLocation() , JoyISM->GetActorRotation(), SpawnInfo 
+		);
+		
+		if(!EachSMA) continue;
+		//~~~~~~~~~~~
+		
+		//Mesh Comp
+		UStaticMeshComponent* Mesh = EachSMA->GetStaticMeshComponent();
+		
+		//Movable! 
+		Mesh->SetMobility(EComponentMobility::Movable);
+		
+		//Mesh
+		Mesh->SetStaticMesh(JoyISM->Mesh->StaticMesh);
+		  
+		//Materials
+		const int32 MatTotal = JoyISM->Mesh->GetNumMaterials();
+		for(int32 v = 0; v < MatTotal; v++)
+		{
+				Mesh->SetMaterial(v,JoyISM->Mesh->GetMaterial(v));
+		}
+		
+		//Transform
+		EachSMA->SetActorTransform(Each);
+		
+		//Copy Layers!
+		EachSMA->Layers = JoyISM->Layers;
+		
+		//Set Folder
+		EachSMA->SetFolderPath(JoyISM->GetFolderPath());
+	
+		//Done
+		EachSMA->Modify();
+		
+		GEditor->SelectActor( EachSMA, /*InSelected=*/true, /*bNotify=*/true );
+	}
+
+	GEditor->SelectActor( JoyISM, /*InSelected=*/false, /*bNotify=*/true );
+	
+	//Pre Delete
+	JoyISM->Modify();
+	
+	//Destroy
+	JoyISM->Destroy(); 
+}
+void FVictoryEdAlignMode::PerformJoyISM()
+{
+	CHECK_VSELECTED
+	
+	const FScopedTransaction Transaction(LOCTEXT("CreateInstancedStaticMeshFromSelection", "Create Instanced Static Mesh Actor From Selected Actors"));
+	
+	//Get Static mesh from root selected
+	
+	//ignore actors that dont have same static mesh as root
+	
+	AStaticMeshActor* RootSMA = Cast<AStaticMeshActor>(VictoryEngine->VSelectedActor);
+	if(!RootSMA) 
+	{
+		//Not valid
+		return;
+	}
+	if(RootSMA->IsA(AJoyISM::StaticClass()))
+	{
+		//Dont perform on existing JoyISM !
+		return;
+	}
+	//Root SM
+	UStaticMeshComponent* RootSMC = RootSMA->GetStaticMeshComponent();
+	UStaticMesh* RootSM = RootSMC->StaticMesh; 
+	
+	TArray<FTransform> Transforms;
+	
+	TArray<AActor*> ToDestroy;
+	//For Each Selected Actor
+	for(FSelectionIterator VSelectItr = VictoryEngine->GetSelectedActorIterator(); 
+		VSelectItr; ++VSelectItr )
+	{
+		//Only works with static mesh actors
+		AStaticMeshActor* EachSMA = Cast<AStaticMeshActor>(*VSelectItr);
+		if(!EachSMA) continue;
+		//~~~~~~~~~~~~~~~~~~
+		
+		//Same as Root?
+		if(EachSMA->GetStaticMeshComponent()->StaticMesh != RootSM)
+		{
+			//Skip cause not same SM
+			continue;
+		}
+		
+		//Add!
+		Transforms.Add(EachSMA->GetTransform());
+		ToDestroy.Add(EachSMA);
+		V_LOG2("Performed JoyISM ~ ", EachSMA->GetName()); 
+	}
+	
+	//Create JoyISM
+	FActorSpawnParameters SpawnInfo;
+	SpawnInfo.bNoCollisionFail 		= true;
+	SpawnInfo.bDeferConstruction 	= false;
+	 
+	AJoyISM* JoyISM = GetWorld()->SpawnActor<AJoyISM>(
+		AJoyISM::StaticClass(), 
+		RootSMA->GetActorLocation() , RootSMA->GetActorRotation(), SpawnInfo 
+	);
+	 
+	//Mesh
+	JoyISM->Mesh->SetStaticMesh(RootSM);
+	  
+	//Materials
+	const int32 MatTotal = RootSMC->GetNumMaterials();
+	for(int32 v = 0; v < MatTotal; v++)
+	{
+		JoyISM->Mesh->SetMaterial(v,RootSMC->GetMaterial(v));
+	}
+	 
+	//for each Transform in world space
+	for(FTransform& Each : Transforms)
+	{
+		JoyISM->Mesh->AddInstanceWorldSpace(Each);
+	} 
+	
+	//Copy Layers
+	JoyISM->Layers = RootSMA->Layers;
+	
+	//Set Folder
+	JoyISM->SetFolderPath(RootSMA->GetFolderPath());
+		 
+	//Done! 
+	JoyISM->Modify();
+	  
+	//Destroy original
+	for(AActor* Each : ToDestroy)
+	{
+		GEditor->SelectActor( Each, /*InSelected=*/false, /*bNotify=*/true );
+		
+		Each->Modify();
+		
+		Each->Destroy();
+	}
+	
+	
+	
+	GEditor->SelectActor( JoyISM, /*InSelected=*/true, /*bNotify=*/true );
+	
 }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -429,16 +660,30 @@ void FVictoryEdAlignMode::InputKeyPressed(FKey Key)
 	//Y Key
 	if(Key == EKeys::Y) 
 	{
+		YDown = true;
 		DropSelectedActorsToNearestSurface();
+		return;
+	}
+	
+	//I Key
+	if(Key == EKeys::I) 
+	{
+		if(ShiftDown)
+		{
+			ReverseJoyISM();
+		}
+		else
+		{	
+			PerformJoyISM();
+		}
 		return;
 	}
 	
 	//U Key
 	if(Key == EKeys::U) 
-	{
-		YDown = true;
-		DrawVerticiesMode++;
-		if(DrawVerticiesMode > 2) DrawVerticiesMode = 0;
+	{ 
+		VictoryEngine->DrawVerticiesMode+=2; //skipping the 2 state, cause it not working at moment
+		if(VictoryEngine->DrawVerticiesMode > 2) VictoryEngine->DrawVerticiesMode = 0;
 		return;
 	}
 	
@@ -465,15 +710,16 @@ void FVictoryEdAlignMode::InputKeyPressed(FKey Key)
 	
 	
 	//- Key
-	if(Key == EKeys::Underscore) 
-	{
+	if(Key == EKeys::Hyphen) //weirdly, underscore not do anything
+	{ 									
 		MinusIsDown = true;
 		PendingButtonRefresh = true;
 		return;
 	}
-	//+ Key
+	//+ Key 
 	if(Key == EKeys::Equals) 
-	{
+	{ 
+		
 		PlusIsDown = true;
 		PendingButtonRefresh = true;
 		return;
@@ -493,7 +739,7 @@ void FVictoryEdAlignMode::InputKeyPressed(FKey Key)
 		//CTRL KEY
 		if(Key == EKeys::LeftControl || Key == EKeys::RightControl) return;
 		//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	
+	 
 		SnapKeyPressed = true;
 		return;
 		//~~~~~~~~~
@@ -501,8 +747,8 @@ void FVictoryEdAlignMode::InputKeyPressed(FKey Key)
 	//B Key
 	if(Key == EKeys::B)
 	{
-		VertexDisplayChoice++;
-		if(VertexDisplayChoice > 4) VertexDisplayChoice = 0;
+		VictoryEngine->VertexDisplayChoice++;
+		if(VictoryEngine->VertexDisplayChoice > 4) VictoryEngine->VertexDisplayChoice = 0;
 		return;
 		//~~~~~~~~~
 	}
@@ -530,10 +776,6 @@ void FVictoryEdAlignMode::InputKeyReleased(FKey Key)
 	//Vertex Key
 	if(Key == EKeys::V)
 	{
-		//UNDO SAVE BEFORE MOVE
-		const FScopedTransaction Transaction( NSLOCTEXT("Snap","VictoryGame", "Victory Vertex Snap" )  );
-		VictoryEngine->VSelectedActor->Modify();
-
 		SnapKeyPressed = false;
 	}
 	//RMB
@@ -548,21 +790,21 @@ void FVictoryEdAlignMode::InputKeyReleased(FKey Key)
 	{
 		PendingButtonRefresh = true;
 	}
-	
+	  
 	//SHIFT KEY
 	if(Key == EKeys::LeftShift || Key == EKeys::RightShift) ShiftDown = false;
-	
+	 
 	//- Key
-	else if(Key == EKeys::Underscore) MinusIsDown = false;
+	if(Key == EKeys::Hyphen) MinusIsDown = false;
 	
 	//+ Key
-	else if(Key == EKeys::Equals)  PlusIsDown = false;
+	if(Key == EKeys::Equals)  PlusIsDown = false;
 	
 	//X Key
-	else if(Key == EKeys::X) XDown = false;
+	if(Key == EKeys::X) XDown = false;
 	
 	//Y Key
-	else if(Key == EKeys::Y) YDown = false;
+	if(Key == EKeys::Y) YDown = false;
 	
 }
 
@@ -593,7 +835,7 @@ void FVictoryEdAlignMode::ProcessMouseInstantMove(FEditorViewportClient* Viewpor
 	RV_Hit = FHitResult(ForceInit);
 	
 	//Clear Previous Ignore Actors
-	RV_TraceParams.IgnoreActors.Empty();
+	RV_TraceParams.IgnoreComponents.Empty();
 	
 	//Ignore All Selected Actors!!!
 	for(FSelectionIterator VSelectItr = VictoryEngine->GetSelectedActorIterator(); 
@@ -785,8 +1027,10 @@ void FVictoryEdAlignMode::GetSelectedVertexLocation(FVector& LocOut)
 void FVictoryEdAlignMode::DoVertexSnap(const FVector& Dest)
 {
 	CHECK_VSELECTED
-	
-	
+	  
+	//Somehow undo redo is capturing the actor move event on its own and recording it in a wonky way
+	//const FScopedTransaction Transaction( NSLOCTEXT("Snap","VictoryGame", "Victory Vertex Snap" )  );
+		
 	FVector SelectedVertexLocation;
 	
 	//Initial Location
@@ -817,6 +1061,8 @@ void FVictoryEdAlignMode::DoVertexSnap(const FVector& Dest)
 	//Refresh After Moving
 	PendingButtonRefresh = true;
 	
+	//Done! 
+	//VictoryEngine->VSelectedActor->Modify();
 }
 
 void FVictoryEdAlignMode::RefreshVertexButtons(const FSceneView* View)
@@ -834,7 +1080,7 @@ void FVictoryEdAlignMode::RefreshVertexButtons(const FSceneView* View)
 	HighlightedActorButtons.Empty();
 	
 	//~~~ Vars ~~~
-	const float ButtonHalfSize = CurrentVerticiesScale/2;
+	const float ButtonHalfSize = VictoryEngine->CurrentVerticiesScale/2;
 	
 	//~~~~~~~~~~~~~~~~~~~~~
 	//			Selected Actor
@@ -911,7 +1157,7 @@ void FVictoryEdAlignMode::RefreshVertexButtons(const FSceneView* View)
 void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDrawInterface* PDI, const FPositionVertexBuffer* VertexBuffer, const FTransform& SMATransform, bool DrawingSelectedActor)
 {
 	CHECK_VSELECTED
-	
+	 
 	if(!View) 			return;
 	if(!PDI) 			return;
 	if(!VertexBuffer) 	return;
@@ -940,7 +1186,7 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 			PDI->DrawPoint(
 				SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 				RV_Yellow,
-				CurrentVerticiesScale*VERTEX_SELECTED_MULT,
+				VictoryEngine->CurrentVerticiesScale*VERTEX_SELECTED_MULT,
 				0 //depth
 			);
 			continue;
@@ -951,24 +1197,24 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 			PDI->DrawPoint(
 				SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 				FLinearColor(0,1,1,1),
-				CurrentVerticiesScale*VERTEX_SELECTED_MULT,
+				VictoryEngine->CurrentVerticiesScale*VERTEX_SELECTED_MULT,
 				0 //depth
 			);
 			continue;
 		}
 		else
 		{
-			if(DrawVerticiesMode < 2) continue;
+			if(VictoryEngine->DrawVerticiesMode < 2) continue;
 			//~~~~~~~~~~~~~~~~~~~
 			
 			//Spheres
-			if(VertexDisplayChoice == VERTEX_DISPLAY_SPHERE)
+			if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_SPHERE)
 			{
 				if(VertexCount > MAX_VERTEX_COUNT_FOR_DRAWING_SPHERES)
 				{
 				DrawWireBox(
 					PDI,
-					BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),CurrentVerticiesScale*0.5),
+					BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),VictoryEngine->CurrentVerticiesScale*0.5),
 					RV_VRed,
 					0
 				);
@@ -980,7 +1226,7 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 					PDI, 
 					SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 					RV_VRed, 
-					CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
+					VictoryEngine->CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
 					12, 
 					0
 				);
@@ -989,13 +1235,13 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 			}
 			
 			//Diamond
-			else if(VertexDisplayChoice == VERTEX_DISPLAY_DIAMOND3D)
+			else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_DIAMOND3D)
 			{
 			DrawWireSphere(
 				PDI, 
 				SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 				RV_VRed, 
-				CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
+				VictoryEngine->CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
 				4, 
 				0
 			);
@@ -1003,11 +1249,11 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 			}
 			
 			//Box
-			else if(VertexDisplayChoice == VERTEX_DISPLAY_3DBOX)
+			else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_3DBOX)
 			{
 			DrawWireBox(
 				PDI,
-				BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),CurrentVerticiesScale*VERTEX_SHAPE_MULT),
+				BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),VictoryEngine->CurrentVerticiesScale*VERTEX_SHAPE_MULT),
 				RV_VRed,
 				0
 			);
@@ -1015,12 +1261,12 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 			}
 			
 			//Stars
-			else if(VertexDisplayChoice == VERTEX_DISPLAY_STARS)
+			else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_STARS)
 			{
 			DrawWireStar(
 				PDI,
 				SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
-				CurrentVerticiesScale, 
+				VictoryEngine->CurrentVerticiesScale, 
 				RV_VRed,
 				0
 			);
@@ -1028,13 +1274,13 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 			}
 			
 			//Rect
-			else if(VertexDisplayChoice == VERTEX_DISPLAY_RECT)
+			else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_RECT)
 			{
 			//Draw to the PDI
 			PDI->DrawPoint(
 				SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 				RV_Red,
-				CurrentVerticiesScale,
+				VictoryEngine->CurrentVerticiesScale,
 				0 //depth
 			);
 			continue;
@@ -1058,25 +1304,25 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 			PDI->DrawPoint(
 				SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 				FLinearColor(0,1,1,1),
-				CurrentVerticiesScale*VERTEX_SELECTED_MULT,
+				VictoryEngine->CurrentVerticiesScale*VERTEX_SELECTED_MULT,
 				0 //depth
 			);
 			continue;
 		}
 		
 		//~~~~~~~~~~~~~~~~~~~
-		if(DrawVerticiesMode < 2) continue;
+		if(VictoryEngine->DrawVerticiesMode < 2) continue;
 		//~~~~~~~~~~~~~~~~~~~
 		
 		
 		//Spheres
-		if(VertexDisplayChoice == VERTEX_DISPLAY_SPHERE)
+		if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_SPHERE)
 		{
 			if(VertexCount > MAX_VERTEX_COUNT_FOR_DRAWING_SPHERES)
 			{
 			DrawWireBox(
 				PDI,
-				BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),CurrentVerticiesScale*VERTEX_SHAPE_MULT),
+				BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),VictoryEngine->CurrentVerticiesScale*VERTEX_SHAPE_MULT),
 				RV_VBlue,
 				0
 			);
@@ -1088,7 +1334,7 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 				PDI, 
 				SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 				RV_VBlue, 
-				CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
+				VictoryEngine->CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
 				12, 
 				0
 			);
@@ -1097,13 +1343,13 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 		}
 		
 		//Diamond
-		else if(VertexDisplayChoice == VERTEX_DISPLAY_DIAMOND3D)
+		else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_DIAMOND3D)
 		{
 		DrawWireSphere(
 			PDI, 
 			SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 			RV_VBlue, 
-			CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
+			VictoryEngine->CurrentVerticiesScale*VERTEX_SHAPE_MULT, 
 			4, 
 			0
 		);
@@ -1111,11 +1357,11 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 		}
 			
 		//Box
-		else if(VertexDisplayChoice == VERTEX_DISPLAY_3DBOX)
+		else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_3DBOX)
 		{
 		DrawWireBox(
 			PDI,
-			BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),CurrentVerticiesScale),
+			BoxFromPointWithSize(SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),VictoryEngine->CurrentVerticiesScale),
 			RV_VBlue,
 			0
 		);
@@ -1123,13 +1369,13 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 		}
 		
 		//Stars
-		else if(VertexDisplayChoice == VERTEX_DISPLAY_STARS)
+		else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_STARS)
 		{
 		
 		DrawWireStar(
 			PDI,
 			SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
-			CurrentVerticiesScale, 
+			VictoryEngine->CurrentVerticiesScale, 
 			RV_VBlue,
 			0
 		);
@@ -1137,13 +1383,13 @@ void FVictoryEdAlignMode::PDI_DrawVerticies(const FSceneView* View, FPrimitiveDr
 		}
 		
 		//Rect
-		else if(VertexDisplayChoice == VERTEX_DISPLAY_RECT)
+		else if(VictoryEngine->VertexDisplayChoice == VERTEX_DISPLAY_RECT)
 		{
 		//Draw to the PDI
 		PDI->DrawPoint(
 			SMALocation + SMATransform.TransformVector(VertexBuffer->VertexPosition(Itr)),
 			RV_Blue,
-			CurrentVerticiesScale,
+			VictoryEngine->CurrentVerticiesScale,
 			0 //depth
 		);
 		continue;
@@ -1165,7 +1411,7 @@ void FVictoryEdAlignMode::DrawHotkeyToolTip(FCanvas* Canvas)
 		MouseLocation.X - 7, 
 		RV_yStart - 7,
 		420,
-		VICTORY_TEXT_HEIGHT * 10 + 120,
+		VICTORY_TEXT_HEIGHT * 11 + 120,
 		FLinearColor(0,0,1,0.777)
 	);
 	
@@ -1174,10 +1420,16 @@ void FVictoryEdAlignMode::DrawHotkeyToolTip(FCanvas* Canvas)
 		MouseLocation.X,RV_yStart,
 		RV_Yellow
 	);
-	
+	  
 	RV_yStart += VICTORY_TEXT_HEIGHT * 2;
 	DrawVictoryTextWithColor(Canvas, 
-		"P ~ Restore previous Editor Mode", 
+		"i/Shift + i ~ Convert/Revert JoyISM!", 
+		MouseLocation.X,RV_yStart,
+		RV_Yellow
+	); 
+	RV_yStart += VICTORY_TEXT_HEIGHT + 3;
+	DrawVictoryTextWithColor(Canvas, 
+		"Create or revert Instanced Static Mesh!", 
 		MouseLocation.X,RV_yStart,
 		RV_Yellow
 	);
@@ -1223,7 +1475,7 @@ void FVictoryEdAlignMode::DrawHotkeyToolTip(FCanvas* Canvas)
 		MouseLocation.X,RV_yStart,
 		RV_Yellow
 	);
-	
+	 
 	RV_yStart += VICTORY_TEXT_HEIGHT + 4;
 	DrawVictoryTextWithColor(Canvas, 
 		"Hold + or - ~ Change Vertex Size!", 
@@ -1522,8 +1774,10 @@ void FVictoryEdAlignMode::VictoryDeProject(const FSceneView* View,const FVector2
 //Draw Using the More Fundamental Method, PDI
 void FVictoryEdAlignMode::Render(const FSceneView* View,FViewport* Viewport,FPrimitiveDrawInterface* PDI)
 {
+	CHECK_VSELECTED
+	
 	//~~~ Verticies ~~~
-	if(DrawVerticiesMode > 0 )
+	if(VictoryEngine->DrawVerticiesMode > 0 )
 	{
 	
 	if(SelectedVertexBuffer && VictoryEngine->VSelectedActor)
@@ -1554,14 +1808,22 @@ void FVictoryEdAlignMode::DrawHUD(FEditorViewportClient* ViewportClient,FViewpor
 	if(!VictoryEngine) return;
 	//~~~~~~~~~~~
 	
-	//Title Button
-	DrawVictoryTextWithColor(Canvas, "Victory Editor Hotkeys", 10,VICTORY_TITLE_HEIGHT, FLinearColor(1,0,1,VictoryTitleAlpha));
+	//Dont show title if drawing of verticies is disabled
+	if(VictoryEngine->DrawVerticiesMode == 2)
+	{ 
+		//Title Button
+		DrawVictoryTextWithColor(Canvas, "Victory Editor Hotkeys", 10,VICTORY_TITLE_HEIGHT, FLinearColor(1,0,1,VictoryTitleAlpha));
+			
+		//~~~ Cursor ~~~
+		if(!UsingMouseInstantMove) CheckCursorInButtons(Canvas);
 		
-	//~~~ Cursor ~~~
-	if(!UsingMouseInstantMove) CheckCursorInButtons(Canvas);
-	
-	//~~~ Make Buttons? ~~~
-	if(PendingButtonRefresh) RefreshVertexButtons(View);
+		//~~~ Make Buttons? ~~~
+		if(PendingButtonRefresh) RefreshVertexButtons(View);
+		
+		//SUPER HYPER BUTTON REFRESHING
+		//		due to the slide physx camera thing when moving
+		if(!UsingMouseInstantMove) PendingButtonRefresh = true;
+	} 
 	
 	//~~~~~~~~~~~~~~~~~~~
 	//~~~~~~~~~~~~~~~~~~~
@@ -1579,12 +1841,6 @@ void FVictoryEdAlignMode::DrawHUD(FEditorViewportClient* ViewportClient,FViewpor
 	
 	//Save Prev
 	CursorWorldPrevPos = RV_Vect;
-	
-	//~~~~~~~~~~~~~~~
-	
-	//SUPER HYPER BUTTON REFRESHING
-	//		due to the slide physx camera thing when moving
-	if(!UsingMouseInstantMove) PendingButtonRefresh = true;
 }
 
 void FVictoryEdAlignMode::Tick_VictoryTitle(FEditorViewportClient* ViewportClient)
@@ -1691,9 +1947,9 @@ void FVictoryEdAlignMode::Tick(FEditorViewportClient* ViewportClient,float Delta
 	CHECK_VSELECTED
 	
 	//Minus or Plus?
-	if(MinusIsDown) CurrentVerticiesScale -= 0.333;
-	else if(PlusIsDown) CurrentVerticiesScale += 0.333;
-	if(CurrentVerticiesScale < 2) CurrentVerticiesScale = 2;
+	if(MinusIsDown) VictoryEngine->CurrentVerticiesScale -= 0.333;
+	else if(PlusIsDown) VictoryEngine->CurrentVerticiesScale += 0.333;
+	if(VictoryEngine->CurrentVerticiesScale < 2) VictoryEngine->CurrentVerticiesScale = 2;
 	
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	//					New Selection Actor?
@@ -1710,3 +1966,5 @@ void FVictoryEdAlignMode::Tick(FEditorViewportClient* ViewportClient,float Delta
 		SelectedVertexForSelectedActor = -1;
 	}
 }
+
+#undef LOCTEXT_NAMESPACE
