@@ -224,8 +224,8 @@ void FVictoryEdAlignMode::ReverseJoyISM()
 	}
 	
 	FActorSpawnParameters SpawnInfo;
-	SpawnInfo.bNoCollisionFail 		= true;
-	SpawnInfo.bDeferConstruction 	= false;
+	SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	SpawnInfo.bDeferConstruction             = false;
 	
 	TArray<FTransform> Transforms;
 	int32 Total = JoyISM->Mesh->GetInstanceCount();
@@ -338,8 +338,8 @@ void FVictoryEdAlignMode::PerformJoyISM()
 	
 	//Create JoyISM
 	FActorSpawnParameters SpawnInfo;
-	SpawnInfo.bNoCollisionFail 		= true;
-	SpawnInfo.bDeferConstruction 	= false;
+	SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	SpawnInfo.bDeferConstruction             = false;
 	 
 	AJoyISM* JoyISM = GetWorld()->SpawnActor<AJoyISM>(
 		AJoyISM::StaticClass(), 
@@ -481,7 +481,7 @@ void FVictoryEdAlignMode::DropSelectedActorsToNearestSurface()
 		
 		//Trace!
 		ActorLoc = AsSMA->GetActorLocation();
-		GetWorld()->LineTraceSingle(
+		GetWorld()->LineTraceSingleByChannel(
 			TheHit,		//result
 			ActorLoc,								
 			ActorLoc + FVector(0,0,-20000),
@@ -767,9 +767,6 @@ void FVictoryEdAlignMode::InputKeyPressed(FKey Key)
 	}
 }
 
-
-
-
 //Released
 void FVictoryEdAlignMode::InputKeyReleased(FKey Key)
 {
@@ -835,7 +832,10 @@ void FVictoryEdAlignMode::ProcessMouseInstantMove(FEditorViewportClient* Viewpor
 	RV_Hit = FHitResult(ForceInit);
 	
 	//Clear Previous Ignore Actors
-	RV_TraceParams.IgnoreComponents.Empty();
+	RV_TraceParams = FCollisionQueryParams(FName(TEXT("HUDRMBDown")), true, NULL);
+	RV_TraceParams.bTraceComplex = true;
+	//RV_TraceParams.bTraceAsyncScene = true;
+	RV_TraceParams.bReturnPhysicalMaterial = false;
 	
 	//Ignore All Selected Actors!!!
 	for(FSelectionIterator VSelectItr = VictoryEngine->GetSelectedActorIterator(); 
@@ -850,7 +850,7 @@ void FVictoryEdAlignMode::ProcessMouseInstantMove(FEditorViewportClient* Viewpor
 	}
 	
 	//Trace
-	GetWorld()->LineTraceSingle(
+	GetWorld()->LineTraceSingleByChannel(
 		RV_Hit,		//result
 		CursorWorldPos,	//start
 		CursorWorldPos + 100000 * CursorWorldDir , //end

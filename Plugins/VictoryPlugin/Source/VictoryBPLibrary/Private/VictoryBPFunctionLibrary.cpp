@@ -2,15 +2,24 @@
 	By Rama
 */
 #include "VictoryBPLibraryPrivatePCH.h"
-
+ 
+#include "VictoryBPFunctionLibrary.h"
+ 
 #include "StaticMeshResources.h"
 
-#include "Developer/ImageWrapper/Public/Interfaces/IImageWrapper.h"
-#include "Developer/ImageWrapper/Public/Interfaces/IImageWrapperModule.h"
+#include "Runtime/ImageWrapper/Public/Interfaces/IImageWrapper.h"
+#include "Runtime/ImageWrapper/Public/Interfaces/IImageWrapperModule.h"
+
+//Body Setup
+#include "PhysicsEngine/BodySetup.h"
+
 
 //~~~ PhysX ~~~
 #include "PhysXIncludes.h"
-#include "PhysicsPublic.h"		//For the ptou conversions
+#include "PhysXPublic.h"		//For the ptou conversions
+
+//For Scene Locking using Epic's awesome helper macros like SCOPED_SCENE_READ_LOCK
+#include "Runtime/Engine/Private/PhysicsEngine/PhysXSupport.h"
 //~~~~~~~~~~~
  
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -21,7 +30,16 @@
 //		has to be after PhysX includes to avoid isfinite name definition issues
 #include <chrono>
 #include <random>
+ 
 
+
+
+/*
+	~~~ Rama File Operations CopyRight ~~~ 
+	
+	If you use any of my file operation code below, 
+	please credit me somewhere appropriate as "Rama"
+*/
 template <class FunctorType>
 class PlatformFileFunctor : public IPlatformFile::FDirectoryVisitor	//GenericPlatformFile.h
 {
@@ -47,8 +65,35 @@ PlatformFileFunctor<Functor> MakeDirectoryVisitor(Functor&& FunctorInstance)
 	return PlatformFileFunctor<Functor>(MoveTemp(FunctorInstance));
 }
 
+static FDateTime GetFileTimeStamp(const FString& File)
+{
+	return FPlatformFileManager::Get().GetPlatformFile().GetTimeStamp(*File);
+}
+static void SetTimeStamp(const FString& File, const FDateTime& TimeStamp)
+{
+	FPlatformFileManager::Get().GetPlatformFile().SetTimeStamp(*File,TimeStamp);
+}	
+	
+//Radial Result Struct
+struct FFileStampSort
+{
+	FString* FileName;
+	FDateTime FileStamp;
+	
+	FFileStampSort(FString* IN_Name, FDateTime Stamp)
+		: FileName(IN_Name)
+		, FileStamp(Stamp)
+	{}
+};
+
+//For Array::Sort()
+FORCEINLINE bool operator< (const FFileStampSort& Left, const FFileStampSort& Right)
+{
+	return Left.FileStamp < Right.FileStamp; 
+}
+
 //Written by Rama, please credit me if you use this code elsewhere
-static FORCEINLINE bool GetFiles(const FString& FullPathOfBaseDir, TArray<FString>& FilenamesOut, bool Recursive=false, const FString& FilterByExtension = "")
+static bool GetFiles(const FString& FullPathOfBaseDir, TArray<FString>& FilenamesOut, bool Recursive=false, const FString& FilterByExtension = "")
 {
 	//Format File Extension, remove the "." if present
 	const FString FileExt = FilterByExtension.Replace(TEXT("."),TEXT("")).ToLower();
@@ -108,6 +153,77 @@ static FORCEINLINE bool GetFiles(const FString& FullPathOfBaseDir, TArray<FStrin
 	}
 }	
 
+static bool FileExists(const FString& File)
+{
+	return FPlatformFileManager::Get().GetPlatformFile().FileExists(*File);
+}
+static bool FolderExists(const FString& Dir)
+{
+	return FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*Dir);
+}
+static bool RenameFile(const FString& Dest, const FString& Source)
+{
+	//Make sure file modification time gets updated!
+	SetTimeStamp(Source,FDateTime::Now());
+	
+	return FPlatformFileManager::Get().GetPlatformFile().MoveFile(*Dest,*Source);
+}
+	
+//Create Directory, Creating Entire Structure as Necessary
+//		so if JoyLevels and Folder1 do not exist in JoyLevels/Folder1/Folder2
+//			they will be created so that Folder2 can be created!
+
+//This is my solution for fact that trying to create a directory fails 
+//		if its super directories do not exist
+static bool VCreateDirectory(FString FolderToMake) //not const so split can be used, and does not damage input
+{
+	if(FolderExists(FolderToMake))
+	{
+		return true;
+	}
+	
+	// Normalize all / and \ to TEXT("/") and remove any trailing TEXT("/") if the character before that is not a TEXT("/") or a colon
+	FPaths::NormalizeDirectoryName(FolderToMake);
+	
+	//Normalize removes the last "/", but is needed by algorithm
+	//  Guarantees While loop will end in a timely fashion.
+	FolderToMake += "/";
+	
+	FString Base;
+	FString Left;
+	FString Remaining;
+	
+	//Split off the Root
+	FolderToMake.Split(TEXT("/"),&Base,&Remaining);
+	Base += "/"; //add root text and Split Text to Base
+	
+	while(Remaining != "")
+	{
+		Remaining.Split(TEXT("/"),&Left,&Remaining);
+		
+		//Add to the Base
+		Base += Left + FString("/"); //add left and split text to Base
+		
+		//Create Incremental Directory Structure!
+		if ( ! FPlatformFileManager::Get().GetPlatformFile().CreateDirectory(*Base) && 
+			! FPlatformFileManager::Get().GetPlatformFile().DirectoryExists(*Base) )
+		{
+			return false;
+			//~~~~~
+		}
+	}
+	
+	return true;
+}
+/*
+	~~~ Rama File Operations CopyRight ~~~ 
+	
+	If you use any of my file operation code above, 
+	please credit me somewhere appropriate as "Rama"
+*/
+
+
+
 //////////////////////////////////////////////////////////////////////////
 // UVictoryBPFunctionLibrary
 
@@ -117,6 +233,413 @@ UVictoryBPFunctionLibrary::UVictoryBPFunctionLibrary(const FObjectInitializer& O
 	
 }
  
+//~~~~~~~~~~~~~~~~~~
+// 	Level Generation
+//~~~~~~~~~~~~~~~~~~
+
+/*
+	CHANGE RETURN TYPE TO KISMET (or remove the kismet part)
+		AND THEN GIVE OPTION TO ADD OR SET ROTATION OF A KISMET
+	
+	LoadedLevel->LevelTransform.SetRotation(FRotator(0, 120, 0).Quaternion());
+	 
+	//Trigger update!
+	GetWorld()->UpdateLevelStreaming();
+		
+*/
+ULevelStreaming* UVictoryBPFunctionLibrary::VictoryLoadLevelInstance(
+	UObject* WorldContextObject, 
+	FString MapFolderOffOfContent, 
+	FString LevelName, 
+	int32 InstanceNumber,
+	FVector Location, FRotator Rotation,bool& Success
+){ 
+	Success = false; 
+    if(!WorldContextObject) return nullptr;
+	 
+	UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!World) return nullptr;
+	//~~~~~~~~~~~
+ 
+	//Full Name
+	FString FullName = "/Game/" + MapFolderOffOfContent + "/" + LevelName;
+	  
+	FName LevelFName = FName(*FullName);
+    FString PackageFileName = FullName;   
+	
+    ULevelStreamingKismet* StreamingLevel = NewObject<ULevelStreamingKismet>((UObject*)GetTransientPackage(), ULevelStreamingKismet::StaticClass());
+ 
+	if(!StreamingLevel)
+	{
+		return nullptr;
+	}
+	
+	//Long Package Name
+	FString LongLevelPackageName = FPackageName::FilenameToLongPackageName(PackageFileName);
+	
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// Here is where a unique name is chosen for the new level asset
+	// 	Ensure unique names to gain ability to have multiple instances of same level!
+	//			<3 Rama
+	
+	//Create Unique Name based on BP-supplied instance value
+	FString UniqueLevelPackageName = LongLevelPackageName;
+	UniqueLevelPackageName += "_VictoryInstance_" + FString::FromInt(InstanceNumber);
+     
+    //Set!
+    StreamingLevel->SetWorldAssetByPackageName(FName(*UniqueLevelPackageName));
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	 
+    if (World->IsPlayInEditor())
+    {
+        FWorldContext WorldContext = GEngine->GetWorldContextFromWorldChecked(World);
+        StreamingLevel->RenameForPIE(WorldContext.PIEInstance);
+    }
+ 
+    StreamingLevel->LevelColor = FColor::MakeRandomColor();
+    StreamingLevel->bShouldBeLoaded = true;
+    StreamingLevel->bShouldBeVisible = true;
+    StreamingLevel->bShouldBlockOnLoad = false;
+    StreamingLevel->bInitiallyLoaded = true;
+    StreamingLevel->bInitiallyVisible = true;
+ 
+	//Transform
+    StreamingLevel->LevelTransform = FTransform(Rotation,Location);
+ 
+    StreamingLevel->PackageNameToLoad = LevelFName;
+          
+    if (!FPackageName::DoesPackageExist(StreamingLevel->PackageNameToLoad.ToString(), NULL, &PackageFileName))
+    {        
+        return nullptr;
+    }
+  
+	//~~~
+	
+	//Actual map package to load
+	StreamingLevel->PackageNameToLoad = FName(*LongLevelPackageName);
+	
+	//~~~
+	
+    // Add the new level to world.
+    World->StreamingLevels.Add(StreamingLevel);
+      
+	Success = true;
+    return StreamingLevel;
+ }	
+	
+//~~~~~~~
+//		AI
+//~~~~~~~ 
+EPathFollowingRequestResult::Type UVictoryBPFunctionLibrary::Victory_AI_MoveToWithFilter(
+	APawn* Pawn, 
+	const FVector& Dest, 
+	TSubclassOf<UNavigationQueryFilter> FilterClass ,
+	float AcceptanceRadius , 
+	bool bProjectDestinationToNavigation ,
+	bool bStopOnOverlap ,
+	bool bCanStrafe 
+){
+	if(!Pawn) 
+	{
+		return EPathFollowingRequestResult::Failed;
+	}
+	
+	AAIController* AIControl = Cast<AAIController>(Pawn->GetController());
+	if(!AIControl) 
+	{
+		return EPathFollowingRequestResult::Failed;
+	} 
+	
+	return AIControl->MoveToLocation(
+		Dest, 
+		AcceptanceRadius,
+		bStopOnOverlap, 	//bStopOnOverlap
+		true,						//bUsePathfinding 
+		bProjectDestinationToNavigation, 
+		bCanStrafe,			//bCanStrafe
+		FilterClass			//<~~~
+	);
+}
+	
+//~~~~~~
+//Physics
+//~~~~~~ 
+float UVictoryBPFunctionLibrary::GetDistanceToCollision(UPrimitiveComponent* CollisionComponent, const FVector& Point, FVector& ClosestPointOnCollision)
+{
+	if(!CollisionComponent) return -1;
+	 
+	return CollisionComponent->GetDistanceToCollision(Point,ClosestPointOnCollision);
+}
+
+float UVictoryBPFunctionLibrary::GetDistanceBetweenComponentSurfaces(UPrimitiveComponent* CollisionComponent1, UPrimitiveComponent* CollisionComponent2, FVector& PointOnSurface1, FVector& PointOnSurface2)
+{
+	if(!CollisionComponent1 || !CollisionComponent2) return -1;
+ 
+	//Closest Point on 2 to 1
+	CollisionComponent2->GetDistanceToCollision(CollisionComponent1->GetComponentLocation(), PointOnSurface2);
+  
+	//Closest Point on 1 to closest point on surface of 2
+	return CollisionComponent1->GetDistanceToCollision(PointOnSurface2, PointOnSurface1);
+}
+
+bool UVictoryBPFunctionLibrary::VictoryPhysics_UpdateAngularDamping(UPrimitiveComponent* CompToUpdate, float NewAngularDamping)
+{
+	if(!CompToUpdate) return false;
+	
+	FBodyInstance* Body = CompToUpdate->GetBodyInstance();
+	if(!Body) return false;
+	
+	//Deep safety check
+	if(!Body->IsValidBodyInstance()) return false;
+	
+	//Set!
+	Body->AngularDamping = NewAngularDamping;
+	
+	//~~~~~~~~~~~~~~~~~
+	Body->UpdateDampingProperties();
+	//~~~~~~~~~~~~~~~~~
+	
+	return true;
+}
+	 
+bool UVictoryBPFunctionLibrary::VictoryDestructible_DestroyChunk(UDestructibleComponent* DestructibleComp, int32 HitItem)
+{   
+	#if WITH_APEX
+	if(!DestructibleComp) 
+	{
+		return false;
+	}
+	  
+	//Visibility
+	DestructibleComp->SetChunkVisible( HitItem, false );
+	 
+	//Collision
+	physx::PxShape** PShapes;
+	const physx::PxU32 PShapeCount = DestructibleComp->ApexDestructibleActor->getChunkPhysXShapes(PShapes, HitItem);
+	if (PShapeCount > 0)
+	{    
+		PxFilterData PQueryFilterData,PSimFilterData; //null data
+		  
+		for(uint32 ShapeIndex = 0; ShapeIndex < PShapeCount; ++ShapeIndex)
+		{ 
+			PxShape* Shape = PShapes[ShapeIndex];
+			if(!Shape) continue;
+			
+			{ 
+				SCOPED_SCENE_WRITE_LOCK(Shape->getActor()->getScene());
+				
+				Shape->setQueryFilterData(PQueryFilterData); //null data
+				Shape->setSimulationFilterData(PSimFilterData); //null data
+				Shape->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, false);
+				Shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, false);
+				Shape->setFlag(PxShapeFlag::eVISUALIZATION, false);	
+			}
+		}
+	}
+	return true;
+	#endif //WITH_APEX
+	
+	return false;
+}
+
+static int32 GetChildBones(const FReferenceSkeleton& ReferenceSkeleton, int32 ParentBoneIndex, TArray<int32> & Children)
+{ 
+	Children.Empty();
+
+	const int32 NumBones = ReferenceSkeleton.GetNum();
+	for(int32 ChildIndex=ParentBoneIndex+1; ChildIndex<NumBones; ChildIndex++)
+	{
+		if ( ParentBoneIndex == ReferenceSkeleton.GetParentIndex(ChildIndex) )
+		{
+			Children.Add(ChildIndex);
+		}
+	}
+
+	return Children.Num();
+}
+static void GetChildBoneNames_Recursive(USkeletalMeshComponent* SkeletalMeshComp, int32 ParentBoneIndex, TArray<FName>& ChildBoneNames)
+{	
+	TArray<int32> BoneIndicies;  
+	GetChildBones(SkeletalMeshComp->SkeletalMesh->RefSkeleton, ParentBoneIndex, BoneIndicies);
+	   
+	if(BoneIndicies.Num() < 1)
+	{
+		//Stops the recursive skeleton search
+		return;
+	}
+	 
+	for(const int32& BoneIndex : BoneIndicies)
+	{
+		FName ChildBoneName = SkeletalMeshComp->GetBoneName(BoneIndex);
+		ChildBoneNames.Add(ChildBoneName);
+		 
+		//Recursion
+		GetChildBoneNames_Recursive(SkeletalMeshComp, BoneIndex,ChildBoneNames);
+	}
+}
+
+int32 UVictoryBPFunctionLibrary::GetAllBoneNamesBelowBone( USkeletalMeshComponent* SkeletalMeshComp, FName StartingBoneName,  TArray<FName>& BoneNames )
+{
+	BoneNames.Empty();
+	
+	if(!SkeletalMeshComp || !SkeletalMeshComp->SkeletalMesh)
+	{
+		return -1;
+		//~~~~
+	}
+	 
+	int32 StartingBoneIndex = SkeletalMeshComp->GetBoneIndex(StartingBoneName);
+	 
+	//Recursive
+	GetChildBoneNames_Recursive(SkeletalMeshComp, StartingBoneIndex, BoneNames);
+	     
+	return BoneNames.Num();
+}
+
+
+//~~~~~~
+// File IO
+//~~~~~~ 
+bool UVictoryBPFunctionLibrary::JoyFileIO_GetFiles(TArray<FString>& Files, FString RootFolderFullPath, FString Ext)
+{
+	if(RootFolderFullPath.Len() < 1) return false;
+	
+	FPaths::NormalizeDirectoryName(RootFolderFullPath);
+	
+	IFileManager& FileManager = IFileManager::Get();
+	 
+	if(!Ext.Contains(TEXT("*")))
+	{
+		if(Ext == "") 
+		{
+			Ext = "*.*";
+		}
+		else
+		{
+			Ext = (Ext.Left(1) == ".") ? "*" + Ext : "*." + Ext;
+		}
+	}
+	
+	FString FinalPath = RootFolderFullPath + "/" + Ext;
+	FileManager.FindFiles(Files, *FinalPath, true, false);
+	return true;				  
+}
+bool UVictoryBPFunctionLibrary::JoyFileIO_GetFilesInRootAndAllSubFolders(TArray<FString>& Files, FString RootFolderFullPath, FString Ext)
+{
+	if(RootFolderFullPath.Len() < 1) return false;
+	
+	FPaths::NormalizeDirectoryName(RootFolderFullPath);
+	
+	IFileManager& FileManager = IFileManager::Get();
+	 
+	if(!Ext.Contains(TEXT("*")))
+	{
+		if(Ext == "") 
+		{
+			Ext = "*.*";
+		}
+		else
+		{
+			Ext = (Ext.Left(1) == ".") ? "*" + Ext : "*." + Ext;
+		}
+	}
+	
+	FileManager.FindFilesRecursive(Files, *RootFolderFullPath, *Ext, true, false);
+	return true;
+}
+
+bool UVictoryBPFunctionLibrary::ScreenShots_Rename_Move_Most_Recent(
+	FString& OriginalFileName,
+	FString NewName, 
+	FString NewAbsoluteFolderPath, 
+	bool HighResolution
+){ 
+	OriginalFileName = "None";
+
+	//File Name given?
+	if(NewName.Len() <= 0) return false;
+	
+	//Normalize
+	FPaths::NormalizeDirectoryName(NewAbsoluteFolderPath);
+	
+	//Ensure target directory exists, 
+	//		_or can be created!_ <3 Rama
+	if(!VCreateDirectory(NewAbsoluteFolderPath)) return false;
+	
+	FString ScreenShotsDir = VictoryPaths__ScreenShotsDir();
+	
+	//Find all screenshots
+	TArray<FString> Files;									//false = not recursive, not expecting subdirectories
+	bool Success = GetFiles(ScreenShotsDir, Files, false);
+	
+	if(!Success)
+	{
+		return false;
+	}
+	
+	//Filter
+	TArray<FString> ToRemove; //16 bytes each, more stable than ptrs though since RemoveSwap is involved
+	for(FString& Each : Files)
+	{
+		if(HighResolution)
+		{
+			//remove those that dont have it
+			if(Each.Left(4) != "High")
+			{
+				ToRemove.Add(Each);
+			}
+		}
+		else
+		{ 
+			//Remove those that have it!
+			if(Each.Left(4) == "High")
+			{
+				ToRemove.Add(Each);
+			}
+		}
+	}
+	
+	//Remove!
+	for(FString& Each : ToRemove)
+	{
+		Files.RemoveSwap(Each); //Fast remove! Does not preserve order
+	}
+	
+	//No files?
+	if(Files.Num() < 1)
+	{ 
+		return false;
+	}
+	
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	// Rama's Sort Files by Time Stamp Feature
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	//Sort the file names by time stamp
+	//  This is my custom c++ struct to do this,
+	//  	combined with my operator< and UE4's
+	//			TArray::Sort() function!
+	TArray<FFileStampSort> FileSort;
+	for(FString& Each : Files)
+	{
+		FileSort.Add(FFileStampSort(&Each,GetFileTimeStamp(Each)));
+		
+	}
+
+	//Sort all the file names by their Time Stamp!
+	FileSort.Sort();
+	
+	//Biggest value = last entry
+	OriginalFileName = *FileSort.Last().FileName;
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+	    
+	//Generate new Full File Path!
+	FString NewFullFilePath = NewAbsoluteFolderPath + "/" + NewName + ".png";
+	 
+	//Move File!
+	return RenameFile(NewFullFilePath, ScreenShotsDir + "/" + OriginalFileName);
+}
+
 void UVictoryBPFunctionLibrary::VictoryISM_GetAllVictoryISMActors(UObject* WorldContextObject, TArray<AVictoryISM*>& Out)
 {
 	if(!WorldContextObject) return;
@@ -203,7 +726,8 @@ void UVictoryBPFunctionLibrary::VictoryISM_ConvertToVictoryISMActors(
 		  
 		//Create Victory ISM
 		FActorSpawnParameters SpawnInfo;
-		SpawnInfo.bNoCollisionFail 		= true; //always create!
+		//SpawnInfo.bNoCollisionFail 		= true; //always create!
+		SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		SpawnInfo.bDeferConstruction 	= false;
 		 
 		AVictoryISM* NewISM = World->SpawnActor<AVictoryISM>(
@@ -270,6 +794,11 @@ FString UVictoryBPFunctionLibrary::VictoryPaths__SavedDir()
 {
 	return FPaths::ConvertRelativePathToFull(FPaths::GameSavedDir());
 }
+
+FString UVictoryBPFunctionLibrary::VictoryPaths__ScreenShotsDir()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::ScreenShotDir());
+}
  
 FString UVictoryBPFunctionLibrary::VictoryPaths__LogsDir()
 {
@@ -289,6 +818,11 @@ FVector2D UVictoryBPFunctionLibrary::Vector2DInterpTo_Constant(FVector2D Current
 	return FMath::Vector2DInterpConstantTo( Current, Target, DeltaTime, InterpSpeed );
 }
 
+float UVictoryBPFunctionLibrary::MapRangeClamped(float Value, float InRangeA, float InRangeB, float OutRangeA, float OutRangeB)
+{ 
+	return FMath::GetMappedRangeValueClamped(FVector2D(InRangeA,InRangeB),FVector2D(OutRangeA,OutRangeB),Value);
+}
+
 FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyEvent& KeyEvent)
 {
 	FVictoryInput VInput;
@@ -303,9 +837,66 @@ FVictoryInput UVictoryBPFunctionLibrary::VictoryGetVictoryInput(const FKeyEvent&
 	
 	return VInput;
 }
+FVictoryInputAxis UVictoryBPFunctionLibrary::VictoryGetVictoryInputAxis(const FKeyEvent& KeyEvent)
+{
+	FVictoryInputAxis VInput;
+	 
+	VInput.Key 			= KeyEvent.GetKey();
+	VInput.KeyAsString 	= VInput.Key.GetDisplayName().ToString();
+	
+	VInput.Scale = 1;
+	
+	return VInput;
+}
 
+void UVictoryBPFunctionLibrary::VictoryGetAllAxisKeyBindings(TArray<FVictoryInputAxis>& Bindings)
+{
+	Bindings.Empty();
+	 
+	const UInputSettings* Settings = GetDefault<UInputSettings>();
+	if(!Settings) return;
+	
+	const TArray<FInputAxisKeyMapping>& Axi = Settings->AxisMappings;
+	
+	for(const FInputAxisKeyMapping& Each : Axi)
+	{
+		Bindings.Add(FVictoryInputAxis(Each));
+	}
+}
+void UVictoryBPFunctionLibrary::VictoryRemoveAxisKeyBind(FVictoryInputAxis ToRemove)
+{  
+	//GetMutableDefault
+	UInputSettings* Settings = GetMutableDefault<UInputSettings>();
+	if(!Settings) return;
+	
+	TArray<FInputAxisKeyMapping>& Axi = Settings->AxisMappings;
+	  
+	bool Found = false;
+	for(int32 v = 0; v < Axi.Num(); v++)
+	{
+		if(Axi[v].Key == ToRemove.Key)
+		{
+			Found = true;
+			Axi.RemoveAt(v);
+			v = 0;
+			continue;
+		}
+	}
+	 
+	if(Found)
+	{
+		//SAVES TO DISK
+		Settings->SaveKeyMappings();
+		   
+		//REBUILDS INPUT, creates modified config in Saved/Config/Windows/Input.ini
+		for (TObjectIterator<UPlayerInput> It; It; ++It)
+		{
+			It->ForceRebuildingKeyMaps(true);
+		}
+	}
+}
 
-void UVictoryBPFunctionLibrary::VictoryGetAllKeyBindings(TArray<FVictoryInput>& Bindings)
+void UVictoryBPFunctionLibrary::VictoryGetAllActionKeyBindings(TArray<FVictoryInput>& Bindings)
 {
 	Bindings.Empty();
 	 
@@ -319,7 +910,106 @@ void UVictoryBPFunctionLibrary::VictoryGetAllKeyBindings(TArray<FVictoryInput>& 
 		Bindings.Add(FVictoryInput(Each));
 	}
 }
-bool UVictoryBPFunctionLibrary::VictoryReBindKey(FVictoryInput Action)
+
+void UVictoryBPFunctionLibrary::VictoryRemoveActionKeyBind(FVictoryInput ToRemove)
+{
+	//GetMutableDefault
+	UInputSettings* Settings = GetMutableDefault<UInputSettings>();
+	if(!Settings) return;
+	
+	TArray<FInputActionKeyMapping>& Actions = Settings->ActionMappings;
+	  
+	bool Found = false;
+	for(int32 v = 0; v < Actions.Num(); v++)
+	{
+		if(Actions[v].Key == ToRemove.Key)
+		{
+			Found = true;
+			Actions.RemoveAt(v);
+			v = 0;
+			continue;
+		}
+	}
+	
+	if(Found)
+	{
+		//SAVES TO DISK
+		Settings->SaveKeyMappings();
+		   
+		//REBUILDS INPUT, creates modified config in Saved/Config/Windows/Input.ini
+		for (TObjectIterator<UPlayerInput> It; It; ++It)
+		{
+			It->ForceRebuildingKeyMaps(true);
+		}
+	}
+}
+
+void UVictoryBPFunctionLibrary::VictoryGetAllAxisAndActionMappingsForKey(FKey Key, TArray<FVictoryInput>& ActionBindings, TArray<FVictoryInputAxis>& AxisBindings)
+{ 
+	ActionBindings.Empty();
+	AxisBindings.Empty();
+	
+		const UInputSettings* Settings = GetDefault<UInputSettings>();
+	if(!Settings) return;
+	
+	const TArray<FInputActionKeyMapping>& Actions = Settings->ActionMappings;
+	
+	for(const FInputActionKeyMapping& Each : Actions)
+	{
+		if(Each.Key == Key)
+		{
+			ActionBindings.Add(FVictoryInput(Each));
+		}
+	}
+
+	const TArray<FInputAxisKeyMapping>& Axi = Settings->AxisMappings;
+	
+	for(const FInputAxisKeyMapping& Each : Axi)
+	{  
+		if(Each.Key == Key)
+		{
+			AxisBindings.Add(FVictoryInputAxis(Each));
+		}
+	}
+}
+bool UVictoryBPFunctionLibrary::VictoryReBindAxisKey(FVictoryInputAxis Original, FVictoryInputAxis NewBinding)
+{
+	UInputSettings* Settings = const_cast<UInputSettings*>(GetDefault<UInputSettings>());
+	if(!Settings) return false;
+
+	TArray<FInputAxisKeyMapping>& Axi = Settings->AxisMappings;
+	
+	//~~~
+	 
+	bool Found = false;
+	for(FInputAxisKeyMapping& Each : Axi)
+	{
+		//Search by original
+		if(Each.AxisName.ToString() == Original.AxisName &&
+			Each.Key == Original.Key
+		){   
+			//Update to new!
+			UVictoryBPFunctionLibrary::UpdateAxisMapping(Each,NewBinding);
+			Found = true;
+			break;
+		}  
+	}
+	 
+	if(Found) 
+	{
+		//SAVES TO DISK
+		const_cast<UInputSettings*>(Settings)->SaveKeyMappings();
+		   
+		//REBUILDS INPUT, creates modified config in Saved/Config/Windows/Input.ini
+		for (TObjectIterator<UPlayerInput> It; It; ++It)
+		{
+			It->ForceRebuildingKeyMaps(true);
+		}
+	}
+	return Found;
+}
+
+bool UVictoryBPFunctionLibrary::VictoryReBindActionKey(FVictoryInput Original, FVictoryInput NewBinding)
 {
 	UInputSettings* Settings = const_cast<UInputSettings*>(GetDefault<UInputSettings>());
 	if(!Settings) return false;
@@ -331,9 +1021,12 @@ bool UVictoryBPFunctionLibrary::VictoryReBindKey(FVictoryInput Action)
 	bool Found = false;
 	for(FInputActionKeyMapping& Each : Actions)
 	{
-		if(Each.ActionName.ToString() == Action.ActionName)
-		{  
-			UVictoryBPFunctionLibrary::UpdateActionMapping(Each,Action);
+		//Search by original
+		if(Each.ActionName.ToString() == Original.ActionName &&
+			Each.Key == Original.Key
+		){   
+			//Update to new!
+			UVictoryBPFunctionLibrary::UpdateActionMapping(Each,NewBinding);
 			Found = true;
 			break;
 		}  
@@ -501,8 +1194,14 @@ bool UVictoryBPFunctionLibrary::VictorySoundVolumeChange(USoundClass* SoundClass
 	*/
  }
 float UVictoryBPFunctionLibrary::VictoryGetSoundVolume(USoundClass* SoundClassObject)
-{
-	FAudioDevice* Device = GEngine->GetAudioDevice();
+{ 
+	if (!SoundClassObject)
+	{
+		return -1;
+	}
+	return SoundClassObject->Properties.Volume;
+	/*
+	FAudioDevice* Device = GEngine->GetMainAudioDevice();
 	if (!Device || !SoundClassObject)
 	{
 		return -1;
@@ -511,40 +1210,87 @@ float UVictoryBPFunctionLibrary::VictoryGetSoundVolume(USoundClass* SoundClassOb
 	FSoundClassProperties* Props = Device->GetSoundClassCurrentProperties(SoundClassObject);
 	if(!Props) return -1;
 	return Props->Volume;
+	*/
+}
+ 
+void UVictoryBPFunctionLibrary::VictoryIntPlusEquals(UPARAM(ref) int32& Int, int32 Add, int32& IntOut)
+{  
+	Int += Add;
+	IntOut = Int; 
+} 
+void UVictoryBPFunctionLibrary::VictoryIntMinusEquals(UPARAM(ref) int32& Int, int32 Sub, int32& IntOut)
+{ 
+	Int -= Sub;
+	IntOut = Int; 
 }
 
+void UVictoryBPFunctionLibrary::VictorySortIntArray(UPARAM(ref) TArray<int32>& IntArray, TArray<int32>& IntArrayRef)
+{
+	IntArray.Sort();
+	IntArrayRef = IntArray;
+}
+void UVictoryBPFunctionLibrary::VictorySortFloatArray(UPARAM(ref) TArray<float>& FloatArray, TArray<float>& FloatArrayRef)
+{
+	FloatArray.Sort();
+	FloatArrayRef = FloatArray;
+}
+   
+//String Back To Type
+void UVictoryBPFunctionLibrary::Conversions__StringToVector(const FString& String, FVector& ConvertedVector, bool& IsValid)
+{   
+	IsValid = ConvertedVector.InitFromString( String );
+}
+void UVictoryBPFunctionLibrary::Conversions__StringToRotator(const FString& String, FRotator& ConvertedRotator, bool& IsValid)
+{
+	IsValid = ConvertedRotator.InitFromString( String );
+} 
+void UVictoryBPFunctionLibrary::Conversions__StringToColor(const FString& String, FLinearColor& ConvertedColor, bool& IsValid)
+{ 
+	IsValid = ConvertedColor.InitFromString( String );
+}
+void UVictoryBPFunctionLibrary::Conversions__ColorToString(const FLinearColor& Color, FString& ColorAsString)
+{
+	ColorAsString = Color.ToString();
+}
+ 
+//String Back To Type
 
 
-
-
-
-
+//! not working yet, always getting 255
+/*
+uint8 UVictoryBPFunctionLibrary::Victory_ConvertStringToByte(UEnum* Enum, FString String)
+{  
+	if( !Enum ) return 255;
+	  
+	return Enum->GetIndexByName(*String);
+}
+*/
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-bool UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Bool(FString SectionName,FString VariableName)
+bool UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Bool(FString SectionName,FString VariableName, bool& IsValid)
 {
 	if(!GConfig) return false;
 	//~~~~~~~~~~~
  
 	bool Value;
-	GConfig->GetBool(
+	IsValid = GConfig->GetBool(
 		*SectionName,
 		*VariableName,
 		Value,
 		GGameIni
 	);
 	return Value;
-}
-int32 UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Int(FString SectionName,FString VariableName)
+} 
+int32 UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Int(FString SectionName,FString VariableName, bool& IsValid)
 {
 	if(!GConfig) return 0;
 	//~~~~~~~~~~~
  
 	int32 Value;
-	GConfig->GetInt(
+	IsValid = GConfig->GetInt(
 		*SectionName,
 		*VariableName,
 		Value,
@@ -552,13 +1298,13 @@ int32 UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Int(FString SectionNa
 	);
 	return Value;
 }
-float UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Float(FString SectionName,FString VariableName)
+float UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Float(FString SectionName,FString VariableName, bool& IsValid)
 {
 	if(!GConfig) return 0;
 	//~~~~~~~~~~~
  
 	float Value;
-	GConfig->GetFloat(
+	IsValid = GConfig->GetFloat(
 		*SectionName,
 		*VariableName,
 		Value,
@@ -566,13 +1312,13 @@ float UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Float(FString Section
 	);
 	return Value;
 }
-FVector UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Vector(FString SectionName,FString VariableName)
+FVector UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Vector(FString SectionName,FString VariableName, bool& IsValid)
 {
 	if(!GConfig) return FVector::ZeroVector;
 	//~~~~~~~~~~~
  
 	FVector Value;
-	GConfig->GetVector(
+	IsValid = GConfig->GetVector(
 		*SectionName,
 		*VariableName,
 		Value,
@@ -580,13 +1326,13 @@ FVector UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Vector(FString Sect
 	);
 	return Value;
 }
-FRotator UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Rotator(FString SectionName,FString VariableName)
+FRotator UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Rotator(FString SectionName,FString VariableName, bool& IsValid)
 {
 	if(!GConfig) return FRotator::ZeroRotator;
 	//~~~~~~~~~~~
  
 	FRotator Value;
-	GConfig->GetRotator(
+	IsValid = GConfig->GetRotator(
 		*SectionName,
 		*VariableName,
 		Value,
@@ -594,13 +1340,13 @@ FRotator UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Rotator(FString Se
 	);
 	return Value;
 }
-FLinearColor UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Color(FString SectionName,FString VariableName)
+FLinearColor UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Color(FString SectionName,FString VariableName, bool& IsValid)
 {
 	if(!GConfig) return FColor::Black;
 	//~~~~~~~~~~~
   
 	FColor Value;
-	GConfig->GetColor(
+	IsValid = GConfig->GetColor(
 		*SectionName,
 		*VariableName,
 		Value,
@@ -608,13 +1354,13 @@ FLinearColor UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Color(FString 
 	);
 	return FLinearColor(Value);
 }
-FString UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_String(FString SectionName,FString VariableName)
+FString UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_String(FString SectionName,FString VariableName, bool& IsValid)
 {
 	if(!GConfig) return "";
 	//~~~~~~~~~~~
  
 	FString Value;
-	GConfig->GetString(
+	IsValid = GConfig->GetString(
 		*SectionName,
 		*VariableName,
 		Value,
@@ -623,7 +1369,35 @@ FString UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_String(FString Sect
 	return Value;
 }
 
+FVector2D UVictoryBPFunctionLibrary::VictoryGetCustomConfigVar_Vector2D(FString SectionName, FString VariableName, bool& IsValid)
+{
+	if(!GConfig) return FVector2D::ZeroVector;
+	//~~~~~~~~~~~
+ 
+	FVector Value;
+	IsValid = GConfig->GetVector(
+		*SectionName,
+		*VariableName,
+		Value,
+		GGameIni
+	);
+	return FVector2D(Value.X,Value.Y);
+} 
+  
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+void UVictoryBPFunctionLibrary::VictorySetCustomConfigVar_Vector2D(FString SectionName, FString VariableName, FVector2D Value)
+{
+	if(!GConfig) return;
+	//~~~~~~~~~~~
+	
+	GConfig->SetVector(
+		*SectionName,
+		*VariableName,
+		FVector(Value.X,Value.Y,0),
+		GGameIni
+	);
+}
 
 void UVictoryBPFunctionLibrary::VictorySetCustomConfigVar_Bool(FString SectionName,FString VariableName, bool Value)
 {
@@ -693,7 +1467,7 @@ void UVictoryBPFunctionLibrary::VictorySetCustomConfigVar_Color(FString SectionN
 	GConfig->SetColor(
 		*SectionName,
 		*VariableName,
-		FColor(Value),
+		Value.ToFColor(true),
 		GGameIni
 	);
 }
@@ -785,8 +1559,12 @@ int32 UVictoryBPFunctionLibrary::GetPlayerUniqueNetID()
 	
 	return ThePC->PlayerState->PlayerId;
 }
-UObject* UVictoryBPFunctionLibrary::CreateObject(UObject* WorldContextObject,UClass* TheObjectClass, FName Name)
+UObject* UVictoryBPFunctionLibrary::CreateObject(UObject* WorldContextObject,UClass* TheObjectClass)
 {
+	//See deprecation warning
+	//	Deprecation warning makes it no longer appear in context menu as a new node to add
+	return nullptr;
+	/*
 	if(!TheObjectClass) return NULL;
 	//~~~~~~~~~~~~~~~~~
 	
@@ -794,8 +1572,10 @@ UObject* UVictoryBPFunctionLibrary::CreateObject(UObject* WorldContextObject,UCl
     UWorld* const World = GEngine->GetWorldFromContextObject(WorldContextObject);
 	if(!World) return NULL;
 	//~~~~~~~~~~~
-	 
-	return StaticConstructObject( TheObjectClass, World, Name);
+	    
+	//Need to submit pull request for custom name and custom class both
+	return NewObject<UObject>(World,TheObjectClass);
+	*/
 }
 UPrimitiveComponent* UVictoryBPFunctionLibrary::CreatePrimitiveComponent(
 	UObject* WorldContextObject, 
@@ -812,7 +1592,7 @@ UPrimitiveComponent* UVictoryBPFunctionLibrary::CreatePrimitiveComponent(
 	if(!World) return NULL;
 	//~~~~~~~~~~~
 	 
-	UPrimitiveComponent* NewComp = ConstructObject<UPrimitiveComponent>( CompClass, World, Name);
+	UPrimitiveComponent* NewComp = NewObject<UPrimitiveComponent>(World, Name);
 	if(!NewComp) return NULL;
 	//~~~~~~~~~~~~~
 	 
@@ -834,7 +1614,11 @@ AActor* UVictoryBPFunctionLibrary::SpawnActorIntoLevel(UObject* WorldContextObje
 	//~~~~~~~~~~~
 	
 	FActorSpawnParameters SpawnParameters;
-	SpawnParameters.bNoCollisionFail 		= SpawnEvenIfColliding;
+	if (SpawnEvenIfColliding)
+	{
+		SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	}
+	
 	SpawnParameters.bDeferConstruction = false;
 	 
 	 
@@ -984,27 +1768,26 @@ bool UVictoryBPFunctionLibrary::GetStaticMeshVertexLocations(UStaticMeshComponen
 		return false;
 	}  
 	
-	//Get the Px Mesh!
-	PxTriangleMesh* TriMesh = BodySetup->TriMesh;
-	 
-	if(!TriMesh) 
+	for(PxTriangleMesh* EachTriMesh : BodySetup->TriMeshes)
 	{
-		return false;
+		if (!EachTriMesh)
+		{
+			return false;
+		}
+		//~~~~~~~~~~~~~~~~
+
+		//Number of vertices
+		PxU32 VertexCount = EachTriMesh->getNbVertices();
+
+		//Vertex array
+		const PxVec3* Vertices = EachTriMesh->getVertices();
+
+		//For each vertex, transform the position to match the component Transform 
+		for (PxU32 v = 0; v < VertexCount; v++)
+		{
+			VertexPositions.Add(RV_Transform.TransformPosition(P2UVector(Vertices[v])));
+		}
 	}
-	//~~~~~~~~~~~~~~~~
-	
-	//Number of vertices
-	PxU32 VertexCount 			= TriMesh->getNbVertices();
-	
-	//Vertex array
-	const PxVec3* Vertices 	= TriMesh->getVertices();
-	
-	//For each vertex, transform the position to match the component Transform 
-	for(PxU32 v = 0; v < VertexCount; v++)
-	{ 
-		VertexPositions.Add(RV_Transform.TransformPosition(P2UVector(Vertices[v])));
-	}
-	
 	return true;
 	
 	/*
@@ -1082,7 +1865,7 @@ void UVictoryBPFunctionLibrary::DrawCircle(
 			World, 
 			Vertex1, 
 			Vertex2,
-			LineColor,  
+			LineColor.ToFColor(true),  
 			PersistentLines, 
 			Duration,
 			0, 				//depth  
@@ -1102,12 +1885,12 @@ bool UVictoryBPFunctionLibrary::LoadStringArrayFromFile(TArray<FString>& StringA
 	StringArray.Empty();
 	
 	TArray<FString> FileArray;
-	
+	 
 	if( ! FFileHelper::LoadANSITextFileToStrings(*FullFilePath, NULL, FileArray))
 	{
 		return false;
 	}
-	
+
 	if(ExcludeEmptyLines)
 	{
 		for(const FString& Each : FileArray )
@@ -1325,8 +2108,12 @@ FString UVictoryBPFunctionLibrary::RealWorldTime__GetCurrentOSTime(
 	Day = 					Now.GetDay( );
 	Month = 				Now.GetMonth( );
 	Year = 				Now.GetYear( );
-	
-	return Now.ToString();
+	 
+	//MS are not included in FDateTime::ToString(), so adding it
+	//The Parse function accepts if MS are present.
+	FString NowWithMS = Now.ToString();
+	NowWithMS += "." + FString::FromInt(MilliSeconds);
+	return NowWithMS;
 }
 
 void UVictoryBPFunctionLibrary::RealWorldTime__GetTimePassedSincePreviousTime(
@@ -1407,12 +2194,12 @@ bool UVictoryBPFunctionLibrary::CharacterMovement__SetMaxMoveSpeed(ACharacter* T
 	{
 		return false;
 	}
-	if(!TheCharacter->CharacterMovement)
+	if(!TheCharacter->GetCharacterMovement())
 	{
 		return false;
 	}
 	
-	TheCharacter->CharacterMovement->MaxWalkSpeed = NewMaxMoveSpeed;
+	TheCharacter->GetCharacterMovement()->MaxWalkSpeed = NewMaxMoveSpeed;
 	
 	return true;
 }
@@ -1422,6 +2209,22 @@ bool UVictoryBPFunctionLibrary::CharacterMovement__SetMaxMoveSpeed(ACharacter* T
 int32 UVictoryBPFunctionLibrary::Conversion__FloatToRoundedInteger(float IN_Float)
 {
 	return FGenericPlatformMath::RoundToInt(IN_Float);
+}
+
+
+void UVictoryBPFunctionLibrary::Victory_GetStringFromOSClipboard(FString& FromClipboard)
+{  
+	FPlatformMisc::ClipboardPaste(FromClipboard);
+} 
+void UVictoryBPFunctionLibrary::Victory_SaveStringToOSClipboard(const FString& ToClipboard)
+{
+	FPlatformMisc::ClipboardCopy(*ToClipboard);
+}
+	
+
+bool UVictoryBPFunctionLibrary::HasSubstring(const FString& SearchIn, const FString& Substring, ESearchCase::Type SearchCase, ESearchDir::Type SearchDir)
+{
+	return SearchIn.Contains(Substring, SearchCase, SearchDir);
 }
 
 FString UVictoryBPFunctionLibrary::String__CombineStrings(FString StringFirst, FString StringSecond, FString Separator, FString StringFirstLabel, FString StringSecondLabel)
@@ -1479,6 +2282,32 @@ bool UVictoryBPFunctionLibrary::OptionsMenu__GetDisplayAdapterScreenResolutions(
 	return false;
 }
 
+void UVictoryBPFunctionLibrary::GetUserDisplayAdapterBrand(bool& IsAMD, bool& IsNvidia, bool& IsIntel, bool& IsUnknown, int32& UnknownId)
+{   
+	IsAMD 		= IsRHIDeviceAMD();
+	IsNvidia 	= IsRHIDeviceNVIDIA();
+	IsIntel 	= IsRHIDeviceIntel();
+	
+	IsUnknown = !IsAMD && !IsNvidia && !IsIntel;
+	 
+	if(IsUnknown)
+	{
+		UnknownId = GRHIVendorId;
+	}
+} 
+
+//Make .h's for these two!
+FRotator UVictoryBPFunctionLibrary::TransformVectorToActorSpaceAngle(AActor* Actor, const FVector& InVector)
+{
+	if(!Actor) return FRotator::ZeroRotator;
+	return Actor->ActorToWorld().InverseTransformVector(InVector).Rotation();
+}
+FVector UVictoryBPFunctionLibrary::TransformVectorToActorSpace(AActor* Actor, const FVector& InVector)
+{
+	if(!Actor) return FVector::ZeroVector;
+	return Actor->ActorToWorld().InverseTransformVector(InVector);
+}
+
 AStaticMeshActor* UVictoryBPFunctionLibrary::Clone__StaticMeshActor(UObject* WorldContextObject, bool&IsValid, AStaticMeshActor* ToClone, FVector LocationOffset,FRotator RotationOffset)
 {
 	IsValid = false;
@@ -1497,7 +2326,7 @@ AStaticMeshActor* UVictoryBPFunctionLibrary::Clone__StaticMeshActor(UObject* Wor
 	UClass* SpawnClass = ToClone->GetClass();
 	
 	FActorSpawnParameters SpawnInfo;
-	SpawnInfo.bNoCollisionFail 		= true;
+	SpawnInfo.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	SpawnInfo.Owner 				= ToClone;
 	SpawnInfo.Instigator				= NULL;
 	SpawnInfo.bDeferConstruction 	= false;
@@ -1632,7 +2461,7 @@ void UVictoryBPFunctionLibrary::Draw__Thick3DLineFromCharacterSocket(AActor* The
 {
 	ACharacter * AsCharacter = Cast<ACharacter>(TheCharacter);
 	if (!AsCharacter) return;
-	if (!AsCharacter->Mesh) return;
+	if (!AsCharacter->GetMesh()) return;
 	//~~~~~~~~~~~~~~~~~~~~
 	
 	//Get World
@@ -1640,12 +2469,12 @@ void UVictoryBPFunctionLibrary::Draw__Thick3DLineFromCharacterSocket(AActor* The
 	if (!TheWorld) return;
 	//~~~~~~~~~~~~~~~~~
 	
-	const FVector SocketLocation = AsCharacter->Mesh->GetSocketLocation(Socket);
+	const FVector SocketLocation = AsCharacter->GetMesh()->GetSocketLocation(Socket);
 	DrawDebugLine(
 		TheWorld, 
 		SocketLocation, 
 		EndPoint, 
-		FColor(LineColor), 
+		LineColor.ToFColor(true), 
 		false, 
 		Duration, 
 		0, 
@@ -1675,7 +2504,7 @@ void UVictoryBPFunctionLibrary::Draw__Thick3DLineFromSocket(USkeletalMeshCompone
 		TheWorld, 
 		SocketLocation, 
 		EndPoint, 
-		FColor(LineColor), 
+		LineColor.ToFColor(true),
 		false, 
 		Duration, 
 		0, 
@@ -1693,7 +2522,7 @@ void UVictoryBPFunctionLibrary::Draw__Thick3DLineBetweenActors(AActor * StartAct
 		StartActor->GetWorld(), 
 		StartActor->GetActorLocation(), 
 		EndActor->GetActorLocation(), 
-		FColor(LineColor), 
+		LineColor.ToFColor(true),
 		false, 
 		Duration, 
 		0, 
@@ -1915,7 +2744,11 @@ bool UVictoryBPFunctionLibrary::FileIO__SaveStringArrayToFile(FString SaveDirect
 		FinalStr += Each;
 		FinalStr += LINE_TERMINATOR;
 	}
+	
+
+
 	return FFileHelper::SaveStringToFile(FinalStr, * SaveDirectory);
+	
 }
 float UVictoryBPFunctionLibrary::Calcs__ClosestPointToSourcePoint(const FVector & Source, const TArray<FVector>& OtherPoints, FVector& ClosestPoint)
 {
@@ -1953,7 +2786,7 @@ bool UVictoryBPFunctionLibrary::Data__GetCharacterBoneLocations(AActor * TheChar
 	ACharacter * Source = Cast<ACharacter>(TheCharacter);
 	if (!Source) return false;
 	
-	if (!Source-> Mesh) return false;
+	if (!Source->GetMesh()) return false;
 	//~~~~~~~~~~~~~~~~~~~~~~~~~
 	TArray<FName> BoneNames;
 	
@@ -1961,12 +2794,12 @@ bool UVictoryBPFunctionLibrary::Data__GetCharacterBoneLocations(AActor * TheChar
 	
 	
 	//Get Bone Names
-	Source-> Mesh->GetBoneNames(BoneNames);
+	Source->GetMesh()->GetBoneNames(BoneNames);
 	
 	//Get Bone Locations
 	for (int32 Itr = 0; Itr < BoneNames.Num(); Itr++ )
 	{
-		BoneLocations.Add(Source->Mesh->GetBoneLocation(BoneNames[Itr]));
+		BoneLocations.Add(Source->GetMesh()->GetBoneLocation(BoneNames[Itr]));
 	}
 	
 	return true;
@@ -1979,13 +2812,13 @@ USkeletalMeshComponent* UVictoryBPFunctionLibrary::Accessor__GetCharacterSkeleta
 	ACharacter * AsCharacter = Cast<ACharacter>(TheCharacter);
 	if (!AsCharacter) return NULL;
 	//~~~~~~~~~~~~~~~~~
-	
+	 
 	//Is Valid?
-	if (AsCharacter->Mesh)
-		if (AsCharacter->Mesh->IsValidLowLevel() ) 
+	if (AsCharacter->GetMesh())
+		if (AsCharacter->GetMesh()->IsValidLowLevel() ) 
 			IsValid = true;
 			
-	return AsCharacter->Mesh;
+	return AsCharacter->GetMesh();
 }
 
 bool UVictoryBPFunctionLibrary::TraceData__GetTraceDataFromCharacterSocket(
@@ -2003,13 +2836,13 @@ bool UVictoryBPFunctionLibrary::TraceData__GetTraceDataFromCharacterSocket(
 	if (!AsCharacter) return false;
 	
 	//Mesh Exists?
-	if (!AsCharacter->Mesh) return false;
+	if (!AsCharacter->GetMesh()) return false;
 	
 	//Socket Exists?
-	if (!AsCharacter->Mesh->DoesSocketExist(Socket)) return false;
+	if (!AsCharacter->GetMesh()->DoesSocketExist(Socket)) return false;
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	
-	TraceStart = AsCharacter->Mesh->GetSocketLocation(Socket);
+	TraceStart = AsCharacter->GetMesh()->GetSocketLocation(Socket);
 	TraceEnd = TraceStart + TraceRotation.Vector() * TraceLength;
 	
 	if (DrawTraceData) 
@@ -2023,7 +2856,7 @@ bool UVictoryBPFunctionLibrary::TraceData__GetTraceDataFromCharacterSocket(
 			TheWorld, 
 			TraceStart, 
 			TraceEnd, 
-			FColor(TraceDataColor), 
+			TraceDataColor.ToFColor(true),
 			false, 
 			0.0333, 
 			0, 
@@ -2071,7 +2904,7 @@ bool UVictoryBPFunctionLibrary::TraceData__GetTraceDataFromSkeletalMeshSocket(
 			TheWorld, 
 			TraceStart, 
 			TraceEnd, 
-			FColor(TraceDataColor), 
+			TraceDataColor.ToFColor(true),
 			false, 
 			0.0333, 
 			0, 
@@ -2118,7 +2951,7 @@ AActor*  UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestBone(
 	//initialize hit info
 	FHitResult RV_Hit(ForceInit);
 	
-	TheWorld->LineTraceSingle(
+	TheWorld->LineTraceSingleByChannel(
 		RV_Hit,		//result
 		TraceStart, 
 		TraceEnd, 
@@ -2136,10 +2969,10 @@ AActor*  UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestBone(
 	if (!AsCharacter) return HitActor;
 	
 	//Mesh
-	if (!AsCharacter->Mesh) return HitActor;
+	if (!AsCharacter->GetMesh()) return HitActor;
 	
 	//Component Trace
-	IsValid = AsCharacter->Mesh->K2_LineTraceComponent(
+	IsValid = AsCharacter->GetMesh()->K2_LineTraceComponent(
 		TraceStart, 
 		TraceEnd, 
 		true, 
@@ -2150,12 +2983,13 @@ AActor*  UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestBone(
 	); 
 	
 	//Location
-	ClosestBoneLocation = AsCharacter->Mesh->GetBoneLocation(ClosestBoneName);
+	ClosestBoneLocation = AsCharacter->GetMesh()->GetBoneLocation(ClosestBoneName);
 	
 	return HitActor;
 }
 
 AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
+	UObject* WorldContextObject,
 	const AActor * TraceOwner, 
 	const FVector & TraceStart, 
 	const FVector & TraceEnd, 
@@ -2169,21 +3003,13 @@ AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
 	IsValid = false;
 	AActor * HitActor = NULL;
 	//~~~~~~~~~~~~~~~~~~~~~~
+	
+	if(!WorldContextObject) return nullptr;
 	 
-	//There may not be a trace owner so dont rely on it
-	
-	//Get a PC to GetWorld() from
-	TObjectIterator<APlayerController> Itr;
-	if (!Itr) return NULL;
-	
-	//~~~~~~~~~~~~
-	
-	//Get World
-	UWorld* TheWorld = Itr->GetWorld();
-	if (TheWorld == nullptr) return NULL;
-	//~~~~~~~~~~~~~~~~~
-	
-	
+	UWorld* const TheWorld = GEngine->GetWorldFromContextObject(WorldContextObject);
+	if(!TheWorld) return nullptr;
+	//~~~~~~~~~~~
+	 
 	//Simple Trace First
 	FCollisionQueryParams TraceParams(FName(TEXT("VictoryBPTrace::CharacterMeshSocketTrace")), true, HitActor);
 	TraceParams.bTraceComplex = true;
@@ -2194,7 +3020,7 @@ AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
 	//initialize hit info
 	FHitResult RV_Hit(ForceInit);
 	
-	TheWorld->LineTraceSingle(
+	TheWorld->LineTraceSingleByChannel(
 		RV_Hit,		//result
 		TraceStart, 
 		TraceEnd, 
@@ -2212,11 +3038,11 @@ AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
 	if (!AsCharacter) return HitActor;
 	
 	//Mesh
-	if (!AsCharacter->Mesh) return HitActor;
+	if (!AsCharacter->GetMesh()) return HitActor;
 	
 	//Component Trace
 	FName BoneName;
-	if (! AsCharacter->Mesh->K2_LineTraceComponent(
+	if (! AsCharacter->GetMesh()->K2_LineTraceComponent(
 		TraceStart, 
 		TraceEnd, 
 		true, 
@@ -2231,7 +3057,7 @@ AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
 	TArray<FComponentSocketDescription> SocketNames;
 	
 	//Get Bone Names
-	AsCharacter->Mesh->QuerySupportedSockets(SocketNames);
+	AsCharacter->GetMesh()->QuerySupportedSockets(SocketNames);
 	
 	//						Min
 	FVector CurLoc;
@@ -2247,7 +3073,7 @@ AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
 		if(SocketNames[Itr].Type == EComponentSocketType::Bone) continue;
 		//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		
-		CurLoc = AsCharacter->Mesh->GetSocketLocation(SocketNames[Itr].Name);
+		CurLoc = AsCharacter->GetMesh()->GetSocketLocation(SocketNames[Itr].Name);
 		
 		//Dist
 		CurDist = FVector::Dist(OutImpactPoint, CurLoc);
@@ -2264,7 +3090,7 @@ AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
 	ClosestSocketName = SocketNames[ClosestVibe].Name;
 	
 	//Location
-	SocketLocation = AsCharacter->Mesh->GetSocketLocation(ClosestSocketName);
+	SocketLocation = AsCharacter->GetMesh()->GetSocketLocation(ClosestSocketName);
 	
 	//Valid
 	IsValid = true;
@@ -2273,6 +3099,89 @@ AActor* UVictoryBPFunctionLibrary::Traces__CharacterMeshTrace___ClosestSocket(
 	return HitActor;
 }
 	
+void UVictoryBPFunctionLibrary::VictorySimulateKeyPress(APlayerController* ThePC, FKey Key, EInputEvent EventType)
+{
+	if (!ThePC) return;
+	//~~~~~~~~~~~~
+	 
+	//Player Input / Key Bindings
+	ThePC->InputKey(Key, EventType, 1, false); //amount depressed, bGamepad
+	   
+	//! THIS ENDS UP FIRING TWICE SOME REASON
+	/*
+	//Viewport Client
+	if (ULocalPlayer* LocalPlayer = Cast<ULocalPlayer>(ThePC->Player))
+	{
+		LocalPlayer->ViewportClient->InputKey(
+			LocalPlayer->ViewportClient->Viewport,
+			LocalPlayer->GetControllerId(),
+			Key,
+			EventType,
+			1,//float AmountDepressed = 1.f,
+			false//bool bGamepad=false
+		);
+	}
+	*/
+	//! 
+	
+	//~~~ Slate ~~~
+	
+	FVector2D MousePos;
+	ThePC->GetMousePosition(MousePos.X,MousePos.Y);
+	
+	TSet<FKey> MouseKeySet;
+	MouseKeySet.Add(Key);
+	
+	/*
+		Not working
+	*/
+	FPointerEvent PointerEvent(
+		0,//uint32 InPointerIndex,
+		MousePos,
+		MousePos,
+		FVector2D::ZeroVector, //Delta
+		MouseKeySet,
+		FModifierKeysState()//const FModifierKeysState& InModifierKeys
+	);
+	
+	FKeyEvent KeyEvent(	
+		Key,	//FKey
+		FModifierKeysState(), //const FModifierKeysState& InModifierKeys, 
+		0,//const uint32 InUserIndex,
+		false, //const bool bInIsRepeat,
+		0, //const uint32 InCharacterCode,
+		0 //const uint32 InKeyCode
+	);
+	//not setting other vars properly 
+	 
+	/*
+			private:
+		// Name of the key that was pressed.
+		FKey Key;
+
+		// The character code of the key that was pressed.  Only applicable to typed character keys, 0 otherwise.
+		uint32 CharacterCode;
+
+		// Original key code received from hardware before any conversion/mapping
+		uint32 KeyCode;
+	*/
+ 		
+	if(EventType == IE_Pressed)
+	{
+		//FSlateApplication::Get().ProcessMouseButtonDownEvent(nullptr,PointerEvent);
+		FSlateApplication::Get().ProcessKeyDownEvent(KeyEvent);
+	}
+	else if(EventType == IE_Released)
+	{
+		//FSlateApplication::Get().ProcessMouseButtonUpEvent(PointerEvent);
+		FSlateApplication::Get().ProcessKeyUpEvent(KeyEvent);
+	}
+	else if(EventType == IE_DoubleClick)
+	{
+		//FSlateApplication::Get().ProcessMouseButtonDoubleClickEvent(nullptr,PointerEvent);
+	} 
+}
+
 //Most HUD stuff is in floats so I do the conversion internally
 bool UVictoryBPFunctionLibrary::Viewport__SetMousePosition(const APlayerController* ThePC, const float& PosX, const float& PosY)
 {
@@ -2398,14 +3307,14 @@ bool UVictoryBPFunctionLibrary::Physics__EnterRagDoll(AActor * TheCharacter)
 	if (!AsCharacter) return false;
 	
 	//Mesh?
-	if (!AsCharacter->Mesh) return false;
+	if (!AsCharacter->GetMesh()) return false;
 	
 	//Physics Asset?
-	if(!AsCharacter->Mesh->GetPhysicsAsset()) return false;
+	if(!AsCharacter->GetMesh()->GetPhysicsAsset()) return false;
 	
 	//Victory Ragdoll
-	AsCharacter->Mesh->SetPhysicsBlendWeight(1);
-	AsCharacter->Mesh->bBlendPhysics = true;
+	AsCharacter->GetMesh()->SetPhysicsBlendWeight(1);
+	AsCharacter->GetMesh()->bBlendPhysics = true;
 	
 	return true;
 }
@@ -2421,26 +3330,26 @@ bool UVictoryBPFunctionLibrary::Physics__LeaveRagDoll(
 	if (!AsCharacter) return false;
 	
 	//Mesh?
-	if (!AsCharacter->Mesh) return false;
+	if (!AsCharacter->GetMesh()) return false;
 	
 	//Set Actor Location to Be Near Ragdolled Mesh
 	//Calc Ref Bone Relative Pos for use with IsRagdoll
 	TArray<FName> BoneNames;
-	AsCharacter->Mesh->GetBoneNames(BoneNames);
+	AsCharacter->GetMesh()->GetBoneNames(BoneNames);
 	if(BoneNames.Num() > 0)
 	{
-		AsCharacter->SetActorLocation(FVector(0,0,HeightAboveRBMesh) + AsCharacter->Mesh->GetBoneLocation(BoneNames[0]));
+		AsCharacter->SetActorLocation(FVector(0,0,HeightAboveRBMesh) + AsCharacter->GetMesh()->GetBoneLocation(BoneNames[0]));
 	}
 	
 	//Exit Ragdoll
-	AsCharacter->Mesh->SetPhysicsBlendWeight(0); //1 for full physics
+	AsCharacter->GetMesh()->SetPhysicsBlendWeight(0); //1 for full physics
 
 	//Restore Defaults
-	AsCharacter->Mesh->SetRelativeRotation(InitRotation);
-	AsCharacter->Mesh->SetRelativeLocation(InitLocation);
+	AsCharacter->GetMesh()->SetRelativeRotation(InitRotation);
+	AsCharacter->GetMesh()->SetRelativeLocation(InitLocation);
 	
 	//Set Falling After Final Capsule Relocation
-	if(AsCharacter->CharacterMovement) AsCharacter->CharacterMovement->SetMovementMode(MOVE_Falling);	
+	if(AsCharacter->GetCharacterMovement()) AsCharacter->GetCharacterMovement()->SetMovementMode(MOVE_Falling);	
 	
 	return true;
 }	
@@ -2451,9 +3360,9 @@ bool UVictoryBPFunctionLibrary::Physics__IsRagDoll(AActor* TheCharacter)
 	if (!AsCharacter) return false;
 	
 	//Mesh?
-	if (!AsCharacter->Mesh) return false;
+	if (!AsCharacter->GetMesh()) return false;
 	
-	return AsCharacter->Mesh->IsAnySimulatingPhysics();
+	return AsCharacter->GetMesh()->IsAnySimulatingPhysics();
 }	
 
 bool UVictoryBPFunctionLibrary::Physics__GetLocationofRagDoll(AActor* TheCharacter, FVector& RagdollLocation)
@@ -2462,13 +3371,13 @@ bool UVictoryBPFunctionLibrary::Physics__GetLocationofRagDoll(AActor* TheCharact
 	if (!AsCharacter) return false;
 	
 	//Mesh?
-	if (!AsCharacter->Mesh) return false;
+	if (!AsCharacter->GetMesh()) return false;
 	
 	TArray<FName> BoneNames;
-	AsCharacter->Mesh->GetBoneNames(BoneNames);
+	AsCharacter->GetMesh()->GetBoneNames(BoneNames);
 	if(BoneNames.Num() > 0)
 	{
-		RagdollLocation = AsCharacter->Mesh->GetBoneLocation(BoneNames[0]);
+		RagdollLocation = AsCharacter->GetMesh()->GetBoneLocation(BoneNames[0]);
 	}
 	else return false;
 	
@@ -2484,10 +3393,10 @@ bool UVictoryBPFunctionLibrary::Physics__InitializeVictoryRagDoll(
 	if (!AsCharacter) return false;
 	
 	//Mesh?
-	if (!AsCharacter->Mesh) return false;
+	if (!AsCharacter->GetMesh()) return false;
 	
-	InitLocation = AsCharacter->Mesh->GetRelativeTransform().GetLocation();
-	InitRotation = AsCharacter->Mesh->GetRelativeTransform().Rotator();
+	InitLocation = AsCharacter->GetMesh()->GetRelativeTransform().GetLocation();
+	InitRotation = AsCharacter->GetMesh()->GetRelativeTransform().Rotator();
 	
 	return true;
 }
@@ -2501,17 +3410,17 @@ bool UVictoryBPFunctionLibrary::Physics__UpdateCharacterCameraToRagdollLocation(
 	if (!AsCharacter) return false;
 	
 	//Mesh?
-	if (!AsCharacter->Mesh) return false;
+	if (!AsCharacter->GetMesh()) return false;
 	
 	//Ragdoll?
-	if(!AsCharacter->Mesh->IsAnySimulatingPhysics()) return false;
+	if(!AsCharacter->GetMesh()->IsAnySimulatingPhysics()) return false;
 	
 	FVector RagdollLocation = FVector(0,0,0);
 	TArray<FName> BoneNames;
-	AsCharacter->Mesh->GetBoneNames(BoneNames);
+	AsCharacter->GetMesh()->GetBoneNames(BoneNames);
 	if(BoneNames.Num() > 0)
 	{
-		RagdollLocation = AsCharacter->Mesh->GetBoneLocation(BoneNames[0]);
+		RagdollLocation = AsCharacter->GetMesh()->GetBoneLocation(BoneNames[0]);
 	}
 	
 	//Interp
@@ -2532,51 +3441,15 @@ bool UVictoryBPFunctionLibrary::Accessor__GetSocketLocalTransform(const USkeleta
 	return true;
 }
 */
-
-void UVictoryBPFunctionLibrary::StringConversion__GetFloatAsStringWithPrecision(float TheFloat, FString & FloatString, uint8 Precision)
-{
-	const TCHAR* TheDot = TEXT(".");
-		
-	FloatString = FString::SanitizeFloat(TheFloat);
-	
-	//No . ?
-	if( ! FloatString.Contains(TheDot))
-	{
-		return;
-	}
-	
-	//Split
-	FString LeftS;
-	FString RightS;
-	
-	FloatString.Split(TheDot,&LeftS,&RightS);
-	
-	//Add dot back to LeftS
-	LeftS += TheDot;
-	
-	//Get the Single Number after the precision amount
-	// so in .1273, get the 7
-	FString RightSFirstTruncated = "";
-	if(RightS.Len() - 1 >= Precision)
-	{
-		RightSFirstTruncated = RightS.Mid(Precision,1);
-	}
-	
-	//Truncate the RightS
-	// 	.1273 becomes .12 with precision 2
-	RightS = RightS.Left(Precision);
-	
-	//Round Up if There was any truncated portion
-	if(RightSFirstTruncated != "")
-	{
-		if(FCString::Atod(*RightSFirstTruncated) >= 5)
-		{
-			//.1273 becomes .13
-			RightS = FString::FromInt(FCString::Atod(*RightS) + 1);
-		}
-	}
-	
-	FloatString = LeftS + RightS;
+ 
+void UVictoryBPFunctionLibrary::StringConversion__GetFloatAsStringWithPrecision(float TheFloat, FString & FloatString, int32 Precision, bool IncludeLeadingZero)
+{ 
+	FNumberFormattingOptions NumberFormat;					//Text.h
+	NumberFormat.MinimumIntegralDigits = (IncludeLeadingZero) ? 1 : 0;
+	NumberFormat.MaximumIntegralDigits = 10000;
+	NumberFormat.MinimumFractionalDigits = Precision;
+	NumberFormat.MaximumFractionalDigits = Precision; 
+	FloatString = FText::AsNumber(TheFloat, &NumberFormat).ToString();
 }
 
 bool UVictoryBPFunctionLibrary::LensFlare__GetLensFlareOffsets(
@@ -2601,55 +3474,33 @@ bool UVictoryBPFunctionLibrary::LensFlare__GetLensFlareOffsets(
 	return true;
 }
 
-/*
+
 bool UVictoryBPFunctionLibrary::AnimatedVertex__GetAnimatedVertexLocations(
 	USkeletalMeshComponent* Mesh, 
 	TArray<FVector>& Locations
-)
-{
+){
 	if(!Mesh) return false;
 	if(!Mesh->SkeletalMesh) return false;
 	//~~~~~~~~~
-	
+	 
+	//~~~~~~~~~~~~~
 	Locations.Empty(); 
-	//~~~~~~~~~~~~~~~~~~~
+	//~~~~~~~~~~~~~
+	 
+	Mesh->ComputeSkinnedPositions(Locations);
 	
-	//	Get the Verticies For Each Bone, Most Influenced by That Bone!
-	//					Vertices are in Bone space.
-	TArray<FBoneVertInfo> BoneVertexInfos;
-	FSkeletalMeshTools::CalcBoneVertInfos(Mesh->SkeletalMesh,BoneVertexInfos,true); //true = only dominant influence
+	FTransform ToWorld = Mesh->GetComponentTransform();
+	FVector WorldLocation = ToWorld.GetLocation();
 	
-	//~~~~~~~~~~~~~~~~~~~~~
-	int32 VertItr = 0;
-	FBoneVertInfo* EachBoneVertInfo;
-	FVector BoneWorldPos;
-	int32 NumOfVerticies;
-	FTransform RV_Transform;
-	FVector RV_Vect;
-	for(int32 Itr=0; Itr < BoneVertexInfos.Num() ; Itr++)
+	for(FVector& Each : Locations)
 	{
-		EachBoneVertInfo = &BoneVertexInfos[Itr];
-		//~~~~~~~~~~~~~~~~~~~~~~~~
-		
-		//Bone Transform To World Space, and Location
-		RV_Transform = Mesh->GetBoneTransform(Itr);
-		BoneWorldPos = RV_Transform.GetLocation();
-		
-		//How many verts is this bone influencing?
-		NumOfVerticies = EachBoneVertInfo->Positions.Num();
-		for(VertItr=0; VertItr < NumOfVerticies ; VertItr++)
-		{
-			//Animated Vertex Location!
-			Locations.Add(  BoneWorldPos + RV_Transform.TransformVector(EachBoneVertInfo->Positions[VertItr])  );
-		}
-	}
-	
-	//~~~ Cleanup ~~~
-	BoneVertexInfos.Empty();
+		Each = WorldLocation + ToWorld.TransformVector(Each);
+	} 
 	
 	return true;
 }
 	
+/*
 bool UVictoryBPFunctionLibrary::AnimatedVertex__GetAnimatedVertexLocationsAndNormals(
 	USkeletalMeshComponent* Mesh, 
 	TArray<FVector>& Locations, 
@@ -2789,7 +3640,7 @@ bool UVictoryBPFunctionLibrary::AnimatedVertex__GetCharacterAnimatedVertexLocati
 	ACharacter * AsCharacter = Cast<ACharacter>(TheCharacter);
 	if (!AsCharacter) return false;
 	
-	USkeletalMeshComponent* Mesh = AsCharacter->Mesh;
+	USkeletalMeshComponent* Mesh = AsCharacter->GetMesh();
 	if (!Mesh) return false;
 	//~~~~~~~~~~~~~~~~~~~~
 	
@@ -2807,7 +3658,7 @@ bool UVictoryBPFunctionLibrary::AnimatedVertex__GetCharacterAnimatedVertexLocati
 	ACharacter * AsCharacter = Cast<ACharacter>(TheCharacter);
 	if (!AsCharacter) return false;
 	
-	USkeletalMeshComponent* Mesh = AsCharacter->Mesh;
+	USkeletalMeshComponent* Mesh = AsCharacter->GetMesh();
 	if (!Mesh) return false;
 	//~~~~~~~~~~~~~~~~~~~~
 	
@@ -2825,7 +3676,7 @@ bool UVictoryBPFunctionLibrary::AnimatedVertex__DrawCharacterAnimatedVertexLocat
 	ACharacter * AsCharacter = Cast<ACharacter>(TheCharacter);
 	if (!AsCharacter) return false;
 	
-	USkeletalMeshComponent* Mesh = AsCharacter->Mesh;
+	USkeletalMeshComponent* Mesh = AsCharacter->GetMesh();
 	if (!Mesh) return false;
 	//~~~~~~~~~~~~~~~~~~~~
 	
@@ -3235,6 +4086,20 @@ static EImageFormat::Type GetJoyImageFormat(EJoyImageFormats JoyFormat)
 	}
 	return EImageFormat::JPEG;
 } 
+
+static FString GetJoyImageExtension(EJoyImageFormats JoyFormat)
+{
+	switch(JoyFormat)
+	{
+		case EJoyImageFormats::JPG : return ".jpg";
+		case EJoyImageFormats::PNG : return ".png";
+		case EJoyImageFormats::BMP : return ".bmp";
+		case EJoyImageFormats::ICO : return ".ico";
+		case EJoyImageFormats::EXR : return ".exr";
+		case EJoyImageFormats::ICNS : return ".icns";
+	}
+	return ".png";
+} 
 UTexture2D* UVictoryBPFunctionLibrary::Victory_LoadTexture2D_FromFile(const FString& FullFilePath,EJoyImageFormats ImageFormat, bool& IsValid,int32& Width, int32& Height)
 {
 	
@@ -3243,7 +4108,6 @@ UTexture2D* UVictoryBPFunctionLibrary::Victory_LoadTexture2D_FromFile(const FStr
 	UTexture2D* LoadedT2D = NULL;
 	
 	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
-	// Note: PNG format.  Other formats are supported
 	IImageWrapperPtr ImageWrapper = ImageWrapperModule.CreateImageWrapper(GetJoyImageFormat(ImageFormat));
  
 	//Load From File
@@ -3281,8 +4145,259 @@ UTexture2D* UVictoryBPFunctionLibrary::Victory_LoadTexture2D_FromFile(const FStr
 	IsValid = true;
 	return LoadedT2D;
 }
+UTexture2D* UVictoryBPFunctionLibrary::Victory_LoadTexture2D_FromFile_Pixels(const FString& FullFilePath,EJoyImageFormats ImageFormat,bool& IsValid, int32& Width, int32& Height, TArray<FLinearColor>& OutPixels)
+{
+	//Clear any previous data
+	OutPixels.Empty();
+	
+	IsValid = false;
+	UTexture2D* LoadedT2D = NULL;
+	
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	IImageWrapperPtr ImageWrapper = ImageWrapperModule.CreateImageWrapper(GetJoyImageFormat(ImageFormat));
+ 
+	//Load From File
+	TArray<uint8> RawFileData;
+	if (!FFileHelper::LoadFileToArray(RawFileData, *FullFilePath)) return NULL;
+	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	  
+	//Create T2D!
+	if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(RawFileData.GetData(), RawFileData.Num()))
+	{  
+		const TArray<uint8>* UncompressedRGBA = NULL;
+		if (ImageWrapper->GetRaw(ERGBFormat::RGBA, 8, UncompressedRGBA))
+		{
+			LoadedT2D = UTexture2D::CreateTransient(ImageWrapper->GetWidth(), ImageWrapper->GetHeight(), PF_R8G8B8A8);
+			
+			//Valid?
+			if(!LoadedT2D) return NULL;
+			//~~~~~~~~~~~~~~
+			
+			//Out!
+			Width = ImageWrapper->GetWidth();
+			Height = ImageWrapper->GetHeight();
+			
+			const TArray<uint8>& ByteArray = *UncompressedRGBA;
+			//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+			
+			for(int32 v = 0; v < ByteArray.Num(); v+=4) 
+			{ 
+				if(!ByteArray.IsValidIndex(v+3)) 
+				{ 
+					break;
+				}   
+				     
+				OutPixels.Add(
+					FLinearColor(
+						ByteArray[v],		//R
+						ByteArray[v+1],		//G
+						ByteArray[v+2],		//B
+						ByteArray[v+3] 		//A
+					)
+				);
+			}
+			//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+			   
+			//Copy!
+			void* TextureData = LoadedT2D->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+			FMemory::Memcpy(TextureData, UncompressedRGBA->GetData(), UncompressedRGBA->Num());
+			LoadedT2D->PlatformData->Mips[0].BulkData.Unlock();
+
+			//Update!
+			LoadedT2D->UpdateResource();
+		}
+	}
+	 
+	// Success!
+	IsValid = true;
+	return LoadedT2D;
+	
+}
+bool UVictoryBPFunctionLibrary::Victory_Get_Pixel(const TArray<FLinearColor>& Pixels,int32 ImageHeight, int32 x, int32 y, FLinearColor& FoundColor)
+{
+	int32 Index = y * ImageHeight + x;
+	if(!Pixels.IsValidIndex(Index))
+	{
+		return false;
+	}
+	 
+	FoundColor = Pixels[Index];
+	return true;
+}
 
 
+bool UVictoryBPFunctionLibrary::Victory_SavePixels(const FString& FullFilePath,int32 Width, int32 Height, const TArray<FLinearColor>& ImagePixels, FString& ErrorString)
+{
+	if(FullFilePath.Len() < 1) 
+	{
+		ErrorString = "No file path";
+		return false;
+	}
+	//~~~~~~~~~~~~~~~~~
+	
+	//Ensure target directory exists, 
+	//		_or can be created!_ <3 Rama
+	FString NewAbsoluteFolderPath = FPaths::GetPath(FullFilePath);
+	FPaths::NormalizeDirectoryName(NewAbsoluteFolderPath);
+	if(!VCreateDirectory(NewAbsoluteFolderPath)) 
+	{
+		ErrorString = "Folder could not be created, check read/write permissions~ " + NewAbsoluteFolderPath;
+		return false;
+	}
+	
+	//Create FColor version
+	TArray<FColor> ColorArray;
+	for(const FLinearColor& Each : ImagePixels)
+	{
+		ColorArray.Add(Each.ToFColor(true));
+	} 
+	 
+	if(ColorArray.Num() != Width * Height) 
+	{
+		ErrorString = "Error ~ height x width is not equal to the total pixel array length!";
+		return false;
+	}
+	  
+	//Remove any supplied file extension and/or add accurate one
+	FString FinalFilename = FPaths::GetBaseFilename(FullFilePath, false) + ".png";  //false = dont remove path
+
+	//~~~
+	
+	TArray<uint8> CompressedPNG;
+	FImageUtils::CompressImageArray( 
+		Width, 
+		Height, 
+		ColorArray, 
+		CompressedPNG
+	);
+	    
+	ErrorString = "Success! or if returning false, the saving of file to disk did not succeed for File IO reasons";
+	return FFileHelper::SaveArrayToFile(CompressedPNG, *FinalFilename);
+	 
+	/*
+	//Crashed for JPG, worked great for PNG
+	//Maybe also works for BMP so could offer those two as save options?
+	
+	const int32 x = Width;
+	const int32 y = Height;
+	if(ColorArray.Num() != x * y) 
+	{
+		ErrorString = "Error ~ height x width is not equal to the total pixel array length!";
+		return false;
+	}
+	
+	//Image Wrapper Module
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	
+	//Create Compressor
+	IImageWrapperPtr ImageWrapper = ImageWrapperModule.CreateImageWrapper(GetJoyImageFormat(ImageFormat));
+	
+	if(!ImageWrapper.IsValid()) 
+	{
+		ErrorString = "Error ~ Image wrapper could not be created!";
+		return false;
+	}
+	//~~~~~~~~~~~~~~~~~~~~~~
+	      
+	if ( ! ImageWrapper->SetRaw(
+			(void*)&ColorArray[0], 			//mem address of array start
+			sizeof(FColor) * x * y, 			//total size
+			x, y, 								//dimensions
+			ERGBFormat::BGRA,				//LinearColor == RGBA 
+			(sizeof(FColor) / 4) * 8			//Bits per pixel
+	)) {
+		ErrorString = "ImageWrapper::SetRaw() did not succeed";
+		return false;
+	}
+	
+	ErrorString = "Success! or if returning false, the saving of file to disk did not succeed for File IO reasons";
+	return FFileHelper::SaveArrayToFile(ImageWrapper->GetCompressed(), *FinalFilename);
+	*/
+}
+
+bool UVictoryBPFunctionLibrary::Victory_GetPixelFromT2D(UTexture2D* T2D, int32 X, int32 Y, FLinearColor& PixelColor)
+{
+	if(!T2D) 
+	{
+		return false;
+	}
+	 
+	if(X <= -1 || Y <= -1) 
+	{
+		return false;
+	}
+	 
+	T2D->SRGB = false;
+	T2D->CompressionSettings = TC_VectorDisplacementmap;
+	
+	//Update settings
+	T2D->UpdateResource();
+	 
+	FTexture2DMipMap& MipsMap 	= T2D->PlatformData->Mips[0];
+	int32 TextureWidth = MipsMap.SizeX;
+	int32 TextureHeight = MipsMap.SizeY;
+	 
+	FByteBulkData* RawImageData 	= &MipsMap.BulkData;
+	
+	if(!RawImageData) 
+	{
+		return false;
+	}
+	
+	FColor* RawColorArray = static_cast<FColor*>(RawImageData->Lock(LOCK_READ_ONLY));
+	
+	//Safety check!
+	if (X >= TextureWidth || Y >= TextureHeight)
+	{
+		return false;
+	}
+	   
+	//Get!, converting FColor to FLinearColor 
+	PixelColor = RawColorArray[Y * TextureWidth + X];
+  
+	RawImageData->Unlock();
+	return true;
+}
+bool UVictoryBPFunctionLibrary::Victory_GetPixelsArrayFromT2D(UTexture2D* T2D, int32& TextureWidth, int32& TextureHeight,TArray<FLinearColor>& PixelArray)
+{
+	if(!T2D) 
+	{
+		return false;
+	}
+	
+	//To prevent overflow in BP if used in a loop
+	PixelArray.Empty();
+	
+	T2D->SRGB = false;
+	T2D->CompressionSettings = TC_VectorDisplacementmap;
+	
+	//Update settings
+	T2D->UpdateResource();
+	 
+	FTexture2DMipMap& MyMipMap 	= T2D->PlatformData->Mips[0];
+	TextureWidth = MyMipMap.SizeX;
+	TextureHeight = MyMipMap.SizeY;
+	 
+	FByteBulkData* RawImageData 	= &MyMipMap.BulkData;
+	
+	if(!RawImageData) 
+	{
+		return false;
+	}
+	
+	FColor* RawColorArray = static_cast<FColor*>(RawImageData->Lock(LOCK_READ_ONLY));
+	
+	for(int32 x = 0; x < TextureWidth; x++)
+	{
+		for(int32 y = 0; y < TextureHeight; y++)   
+		{
+			PixelArray.Add(RawColorArray[x * TextureWidth + y]); 
+		}
+	}
+	  
+	RawImageData->Unlock();
+	return true;
+}
 
 class UAudioComponent* UVictoryBPFunctionLibrary::PlaySoundAttachedFromFile(const FString& FilePath, class USceneComponent* AttachToComponent, FName AttachPointName, FVector Location, EAttachLocation::Type LocationType, bool bStopWhenAttachedToDestroyed, float VolumeMultiplier, float PitchMultiplier, float StartTime, class USoundAttenuation* AttenuationSettings)
 {	
@@ -3291,7 +4406,7 @@ class UAudioComponent* UVictoryBPFunctionLibrary::PlaySoundAttachedFromFile(cons
 	if (!sw)
 		return NULL;
 
-	return UGameplayStatics::PlaySoundAttached(sw, AttachToComponent, AttachPointName, Location, LocationType, bStopWhenAttachedToDestroyed, VolumeMultiplier, PitchMultiplier, StartTime, AttenuationSettings);
+	return UGameplayStatics::SpawnSoundAttached(sw, AttachToComponent, AttachPointName, Location, LocationType, bStopWhenAttachedToDestroyed, VolumeMultiplier, PitchMultiplier, StartTime, AttenuationSettings);
 }
 
 void UVictoryBPFunctionLibrary::PlaySoundAtLocationFromFile(UObject* WorldContextObject, const FString& FilePath, FVector Location, float VolumeMultiplier, float PitchMultiplier, float StartTime, class USoundAttenuation* AttenuationSettings)
@@ -3306,7 +4421,12 @@ void UVictoryBPFunctionLibrary::PlaySoundAtLocationFromFile(UObject* WorldContex
 
 class USoundWave* UVictoryBPFunctionLibrary::GetSoundWaveFromFile(const FString& FilePath)
 {
-	USoundWave* sw = (USoundWave*)StaticConstructObject(USoundWave::StaticClass());
+	#if PLATFORM_PS4
+	UE_LOG(LogTemp, Error, TEXT("UVictoryBPFunctionLibrary::GetSoundWaveFromFile ~ vorbis-method not supported on PS4. See UVictoryBPFunctionLibrary::fillSoundWaveInfo"));
+	return nullptr;
+	#endif
+	 
+	USoundWave* sw = NewObject<USoundWave>(USoundWave::StaticClass());
 
 	if (!sw)
 		return NULL;
@@ -3336,10 +4456,11 @@ class USoundWave* UVictoryBPFunctionLibrary::GetSoundWaveFromFile(const FString&
 	return sw;
 }
 
+#if !PLATFORM_PS4
 int32 UVictoryBPFunctionLibrary::fillSoundWaveInfo(class USoundWave* sw, TArray<uint8>* rawFile)
 {
-    FSoundQualityInfo info;
-    FVorbisAudioInfo vorbis_obj = FVorbisAudioInfo();
+    FSoundQualityInfo info; 
+    FVorbisAudioInfo vorbis_obj;
     if (!vorbis_obj.ReadCompressedInfo(rawFile->GetData(), rawFile->Num(), &info))
     {
         //Debug("Can't load header");
@@ -3359,7 +4480,7 @@ int32 UVictoryBPFunctionLibrary::fillSoundWaveInfo(class USoundWave* sw, TArray<
       
 int32 UVictoryBPFunctionLibrary::findSource(class USoundWave* sw, class FSoundSource* out_audioSource)
 {
-	FAudioDevice* device = GEngine ? GEngine->GetAudioDevice() : NULL; //gently ask for the audio device
+	FAudioDevice* device = GEngine ? GEngine->GetMainAudioDevice() : NULL; //gently ask for the audio device
 
 	FActiveSound* activeSound;
 	FSoundSource* audioSource;
@@ -3396,9 +4517,40 @@ int32 UVictoryBPFunctionLibrary::findSource(class USoundWave* sw, class FSoundSo
 	out_audioSource = audioSource;
 	return -2;
 }
-
-
+#endif //PLATFORM_PS4
+ 
 //~~~ Kris ~~~
+ 
+bool UVictoryBPFunctionLibrary::Array_IsValidIndex(const TArray<int32>& TargetArray, int32 Index)
+{
+    // We should never hit these!  They're stubs to avoid NoExport on the class.  Call the Generic* equivalent instead
+    check(0);
+    return false;
+}
+ 
+bool UVictoryBPFunctionLibrary::GenericArray_IsValidIndex(void* TargetArray, const UArrayProperty* ArrayProp, int32 Index)
+{ 
+	bool bResult = false;
+
+	if (TargetArray)
+	{
+		FScriptArrayHelper ArrayHelper(ArrayProp, TargetArray);
+		bResult = ArrayHelper.IsValidIndex(Index);
+	}
+
+	return bResult;
+}
+
+float UVictoryBPFunctionLibrary::GetCreationTime(const AActor* Target)
+{
+    return (Target) ? Target->CreationTime : 0.0f;
+}
+ 
+float UVictoryBPFunctionLibrary::GetTimeAlive(const AActor* Target)
+{
+    return (Target) ? (Target->GetWorld()->GetTimeSeconds() - Target->CreationTime) : 0.0f;
+}
+
 bool UVictoryBPFunctionLibrary::CaptureComponent2D_Project(class USceneCaptureComponent2D* Target, FVector Location, FVector2D& OutPixelLocation)
 {
     if ((Target == nullptr) || (Target->TextureTarget == nullptr))
@@ -3515,97 +4667,112 @@ static IImageWrapperPtr GetImageWrapperByExtention(const FString InImagePath)
     return nullptr;
 }
 
-
-bool UVictoryBPFunctionLibrary::CaptureComponent2D_SaveImage(class USceneCaptureComponent2D* Target, const FString InImagePath)
+bool UVictoryBPFunctionLibrary::CaptureComponent2D_SaveImage(class USceneCaptureComponent2D* Target, const FString ImagePath, const FLinearColor ClearColour)
 {
-    // Bad scene capture component! No render target! Stay! Stay! Ok, feed!... wait, where was I?
-    if ((Target == nullptr) || (Target->TextureTarget == nullptr))
-    {
-        return false;
-    }
-    
-    FRenderTarget* RenderTarget = Target->TextureTarget->GameThread_GetRenderTargetResource();
-    if (RenderTarget == nullptr)
-    {
-        return false;
-    }
- 
-    const int32 Width = Target->TextureTarget->SizeX;
-    const int32 Height = Target->TextureTarget->SizeY;
-      
-    const EPixelFormat PixelFormat = Target->TextureTarget->GetFormat();
-    const int32 ImageBytes = CalculateImageBytes(Width, Height, 0, PixelFormat);
-									//build.cs "RenderCore"
-    TArray<FColor> RawPixels;
-    RawPixels.AddUninitialized(ImageBytes);
+	// Bad scene capture component! No render target! Stay! Stay! Ok, feed!... wait, where was I?
+	if ((Target == nullptr) || (Target->TextureTarget == nullptr))
+	{
+		return false;
+	}
+	
+	FRenderTarget* RenderTarget = Target->TextureTarget->GameThread_GetRenderTargetResource();
+	if (RenderTarget == nullptr)
+	{
+		return false;
+	}
 
-    if (!RenderTarget->ReadPixels(RawPixels))
-    {
-        return false;
-    }
+	TArray<FColor> RawPixels;
+	
+	// Format not supported - use PF_B8G8R8A8.
+	if (Target->TextureTarget->GetFormat() != PF_B8G8R8A8)
+	{
+		// TRACEWARN("Format not supported - use PF_B8G8R8A8.");
+		return false;
+	}
 
-    for (auto& Pixel : RawPixels)
-    {
-        Pixel.A = 255; // Thank Rama (again) for figuring this out.
-    }
-    
-    IImageWrapperPtr ImageWrapper = GetImageWrapperByExtention(InImagePath);
+	if (!RenderTarget->ReadPixels(RawPixels))
+	{
+		return false;
+	}
 
-    if (ImageWrapper.IsValid() &&  ImageWrapper->SetRaw(&RawPixels[0], ImageBytes, Width, Height,  ERGBFormat::BGRA, 8))
-    {
-        FFileHelper::SaveArrayToFile(ImageWrapper->GetCompressed(), *InImagePath);
-        return true;
-    }
-    
-    return false;
+	// Convert to FColor.
+	FColor ClearFColour = ClearColour.ToFColor(false); // FIXME - want sRGB or not?
+
+	for (auto& Pixel : RawPixels)
+	{
+		// Switch Red/Blue changes.
+		const uint8 PR = Pixel.R;
+		const uint8 PB = Pixel.B;
+		Pixel.R = PB;
+		Pixel.B = PR;
+
+		// Set alpha based on RGB values of ClearColour.
+		Pixel.A = ((Pixel.R == ClearFColour.R) && (Pixel.R == ClearFColour.R) && (Pixel.R == ClearFColour.R)) ? 0 : 255;
+	}
+	
+	IImageWrapperPtr ImageWrapper = GetImageWrapperByExtention(ImagePath);
+
+	const int32 Width = Target->TextureTarget->SizeX;
+	const int32 Height = Target->TextureTarget->SizeY;
+	
+	if (ImageWrapper.IsValid() && ImageWrapper->SetRaw(&RawPixels[0], RawPixels.Num() * sizeof(FColor), Width, Height, ERGBFormat::RGBA, 8))
+	{
+		FFileHelper::SaveArrayToFile(ImageWrapper->GetCompressed(), *ImagePath);
+		return true;
+	}
+	
+	return false;
 }
 
-bool UVictoryBPFunctionLibrary::Capture2D_SaveImage(class ASceneCapture2D* Target, const FString InImagePath)
+bool UVictoryBPFunctionLibrary::Capture2D_SaveImage(class ASceneCapture2D* Target, const FString ImagePath, const FLinearColor ClearColour)
 {
-    return (Target) ? CaptureComponent2D_SaveImage(Target->GetCaptureComponent2D(), InImagePath) : false;
-}
-  
-UTexture2D* UVictoryBPFunctionLibrary::LoadTexture2D_FromFileByExtension(const FString InImagePath,  bool& IsValid, int32& OutWidth, int32& OutHeight)
-{
-    UTexture2D* Texture = nullptr;
-    IsValid = false;
-
-    TArray<uint8> CompressedData;
-    if (!FFileHelper::LoadFileToArray(CompressedData, *InImagePath))
-    {
-        return nullptr;
-    }
-    
-    IImageWrapperPtr ImageWrapper = GetImageWrapperByExtention(InImagePath);
-
-    if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(CompressedData.GetData(), CompressedData.Num()))
-    { 
-        const TArray<uint8>* UncompressedBGRA = nullptr;
-        
-        if (ImageWrapper->GetRaw(ERGBFormat::BGRA, 8, UncompressedBGRA))
-        {
-            Texture = UTexture2D::CreateTransient(ImageWrapper->GetWidth(), ImageWrapper->GetHeight(), PF_B8G8R8A8);
-            
-            if (Texture != nullptr)
-            {
-                IsValid = true;
-                
-                OutWidth = ImageWrapper->GetWidth();
-                OutHeight = ImageWrapper->GetHeight();
-
-                void* TextureData = Texture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
-                FMemory::Memcpy(TextureData, UncompressedBGRA->GetData(), UncompressedBGRA->Num());
-                Texture->PlatformData->Mips[0].BulkData.Unlock();
-                Texture->UpdateResource();
-            }
-        }
-    }
-
-    return Texture;
+	return (Target) ? CaptureComponent2D_SaveImage(Target->GetCaptureComponent2D(), ImagePath, ClearColour) : false;
 }
 
+UTexture2D* UVictoryBPFunctionLibrary::LoadTexture2D_FromFileByExtension(const FString& ImagePath, bool& IsValid, int32& OutWidth, int32& OutHeight)
+{
+	UTexture2D* Texture = nullptr;
+	IsValid = false;
 
+	// To avoid log spam, make sure it exists before doing anything else.
+	if (!FPlatformFileManager::Get().GetPlatformFile().FileExists(*ImagePath))
+	{
+		return nullptr;
+	}
 
+	TArray<uint8> CompressedData;
+	if (!FFileHelper::LoadFileToArray(CompressedData, *ImagePath))
+	{
+		return nullptr;
+	}
+	
+	IImageWrapperPtr ImageWrapper = GetImageWrapperByExtention(ImagePath);
+
+	if (ImageWrapper.IsValid() && ImageWrapper->SetCompressed(CompressedData.GetData(), CompressedData.Num()))
+	{ 
+		const TArray<uint8>* UncompressedRGBA = nullptr;
+		
+		if (ImageWrapper->GetRaw(ERGBFormat::RGBA, 8, UncompressedRGBA))
+		{
+			Texture = UTexture2D::CreateTransient(ImageWrapper->GetWidth(), ImageWrapper->GetHeight(), PF_R8G8B8A8);
+			
+			if (Texture != nullptr)
+			{
+				IsValid = true;
+				
+				OutWidth = ImageWrapper->GetWidth();
+				OutHeight = ImageWrapper->GetHeight();
+
+				void* TextureData = Texture->PlatformData->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+				FMemory::Memcpy(TextureData, UncompressedRGBA->GetData(), UncompressedRGBA->Num());
+				Texture->PlatformData->Mips[0].BulkData.Unlock();
+				Texture->UpdateResource();
+			}
+		}
+	}
+
+	return Texture;
+}
 
 //~~~~~~~~~ END OF CONTRIBUTED BY KRIS ~~~~~~~~~~~
  
@@ -3643,6 +4810,8 @@ FString UVictoryBPFunctionLibrary::AppendMultiple(FString A, FString B)
 	 
     return Result;
 }
+
+//~~~ Mhousse ~~~
 
 
 //TESTING
