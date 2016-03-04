@@ -1,0 +1,9 @@
+{
+	"Changelist" : 2875303,
+	"BuildId" : "",
+	"Modules" : 
+	{
+		"VictoryEdEngine" : "UE4Editor-VictoryEdEngine.dll",
+		"VictoryBPLibrary" : "UE4Editor-VictoryBPLibrary.dll"
+	}
+}

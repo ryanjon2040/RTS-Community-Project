@@ -2,7 +2,7 @@
 
 #include "VictoryEdEnginePCH.h"
 
-#include "Slate.h"
+#include "SlateBasics.h"
 
 #include "ScopedTransaction.h"
 

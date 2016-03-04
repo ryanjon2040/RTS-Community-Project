@@ -5,7 +5,7 @@
 	"Version" : 1,
 	"VersionName" : "1.0",
 	"CreatedBy" : "Rama",
-	"CreatedByURL" : "https://forums.unrealengine.com/showthread.php?299-Wiki-Code-Tutorials",
+	"CreatedByURL" : "http://www.ue4code.com",
 	"EngineVersion" : 1579795,
 	"Description" : "Vertex Snapping, Drop Object(s) to Nearest Surface, Other Custom Editor Features & Custom Blueprint Nodes For You!",
 	"Category" : "Victory Plugin",
@@ -13,11 +13,9 @@
 	"Modules" :
 	[		
 		{
-
 			"Name" : "VictoryEdEngine",
 			"Type" : "Editor",
 			"LoadingPhase" : "PreDefault"
-		
 		},
 		{
 			"Name" : "VictoryBPLibrary",
